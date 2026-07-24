@@ -1,0 +1,38 @@
+"use client";
+
+import { useState } from "react";
+import Nav from "./Nav";
+import LandingPage from "./LandingPage";
+import DashboardPage from "./DashboardPage";
+import PLPage from "./PLPage";
+import BalancePage from "./BalancePage";
+import ReceiptsPage from "./ReceiptsPage";
+import ReconPage from "./ReconPage";
+import SettingsPage from "./SettingsPage";
+
+export default function App() {
+  const [page, setPage] = useState("landing");
+
+  const showPage = (name) => {
+    setPage(name);
+    if (typeof window !== "undefined") {
+      window.scrollTo(0, 0);
+    }
+  };
+
+  return (
+    <>
+      <Nav page={page} showPage={showPage} />
+
+      <div className="page">
+        {page === "landing" && <LandingPage showPage={showPage} />}
+        {page === "dashboard" && <DashboardPage showPage={showPage} />}
+        {page === "pl" && <PLPage />}
+        {page === "balance" && <BalancePage />}
+        {page === "receipts" && <ReceiptsPage />}
+        {page === "recon" && <ReconPage />}
+        {page === "settings" && <SettingsPage />}
+      </div>
+    </>
+  );
+}
