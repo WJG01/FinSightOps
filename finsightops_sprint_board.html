@@ -1,0 +1,362 @@
+
+<!-- saved from url=(0097)file:///C:/Users/louis.lim.jun.jie/OneDrive%20-%20Accenture/Desktop/finsightops_sprint_board.html -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --bg:#F6F7F5; --card:#FFFFFF; --ink:#1B1B2A; --muted:#6B6B77; --faint:#9A9AA4;
+    --line:#E7E7E1; --teal:#0F7A63; --teal-soft:#E3F3EE; --purple:#6A1B9A; --purple-soft:#F2E9FA;
+    --amber:#8A5A0B; --amber-soft:#FBEEDA; --done:#3B6D11; --done-soft:#EAF3DE;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:820px;margin:0 auto;padding:28px 20px 60px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--teal);margin-bottom:6px}
+  h1{font-size:30px;line-height:1.1;margin:0 0 14px;font-weight:600}
+  .meta{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:baseline;margin-bottom:16px}
+  .meta .big{font-family:var(--mono);font-size:28px;font-weight:600}
+  .meta .lbl{font-size:13px;color:var(--muted)}
+  .runway{height:12px;border-radius:99px;background:#ECECE6;overflow:hidden;display:flex;border:1px solid var(--line)}
+  .runway > span{height:100%;display:block;background:var(--teal);transition:width .5s ease}
+  .runway-ticks{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--faint);margin:6px 2px 0}
+  .nextup{margin:22px 0 26px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:0 12px 12px 0;padding:16px 18px}
+  .nextup .k{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--teal);margin-bottom:4px}
+  .nextup .t{font-size:18px;font-weight:600}
+  .nextup .s{font-size:13px;color:var(--muted);margin-top:3px}
+  .nextup.alldone{border-left-color:var(--done)}
+  .nextup.alldone .k{color:var(--done)}
+  .sprint{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+  .sprint-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 12px;margin-bottom:6px}
+  .sprint-head h2{font-size:16px;font-weight:600;margin:0}
+  .sprint-head .dates{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .sprint-head .count{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .mini{height:5px;border-radius:99px;background:#ECECE6;overflow:hidden;margin:8px 0 12px}
+  .mini > span{display:block;height:100%;background:var(--purple);transition:width .4s ease}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-top:1px solid var(--line)}
+  li:first-child{border-top:none}
+  li label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;flex:1}
+  input[type=checkbox]{appearance:none;-webkit-appearance:none;margin:2px 0 0;width:19px;height:19px;min-width:19px;border:1.5px solid #C7C7BF;border-radius:5px;background:var(--card);cursor:pointer;position:relative;transition:all .15s}
+  input[type=checkbox]:hover{border-color:var(--teal)}
+  input[type=checkbox]:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  input[type=checkbox]:checked{background:var(--teal);border-color:var(--teal)}
+  input[type=checkbox]:checked::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  .txt{font-size:15px}
+  li.done .txt{color:var(--faint);text-decoration:line-through}
+  .flag{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:99px;margin-left:2px;vertical-align:middle;white-space:nowrap}
+  .flag.m{background:var(--teal-soft);color:var(--teal)}
+  .flag.c{background:var(--amber-soft);color:var(--amber)}
+  code{font-family:var(--mono);font-size:.92em;background:#F0F0EA;padding:1px 5px;border-radius:4px}
+  footer{display:flex;align-items:center;gap:14px;margin-top:22px;flex-wrap:wrap}
+  button{font-family:var(--sans);font-size:13px;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--muted);cursor:pointer}
+  button:hover{border-color:#C7C7BF;color:var(--ink)}
+  button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  .saved{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  @media (prefers-reduced-motion: reduce){*{transition:none !important}}
+  @media (max-width:560px){h1{font-size:25px}.wrap{padding:22px 14px 48px}}
+</style>
+
+</head><body><div class="wrap">
+  <div class="eyebrow">FinSightOps · sprint board</div>
+  <h1>Road to showcase</h1>
+  <div class="meta">
+    <div><span class="big" id="days">12</span> <span class="lbl">days to 14 Aug</span></div>
+    <div><span class="big" id="pct">0%</span> <span class="lbl">complete · <span id="frac">0 / 41</span> tasks</span></div>
+  </div>
+  <div class="runway" id="runway"><span style="width: 0%;"></span></div>
+  <div class="runway-ticks">
+    <span>30 Jul</span><span>4 Aug</span><span>9 Aug</span><span>12 Aug</span><span>14 Aug</span>
+  </div>
+
+  <div class="nextup" id="nextup">
+    <div class="k">Next up</div>
+    <div class="t" id="next-t">Set AWS region to ap-southeast-1 (Singapore); model calls go to Sydney</div>
+    <div class="s" id="next-s">Sprint 0 — Foundations</div>
+  </div>
+
+  <div id="board"><section class="sprint">
+      <div class="sprint-head">
+        <h2>Sprint 0 — Foundations</h2><span class="dates">30 Jul – 1 Aug</span>
+        <span class="count">0/12</span>
+      </div>
+      <div class="mini"><span style="width:0%"></span></div>
+      <ul><li class="">
+        <label><input type="checkbox" data-id="s0-region">
+        <span class="txt">Set AWS region to ap-southeast-1 (Singapore); model calls go to Sydney</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-budget">
+        <span class="txt">Create AWS Budgets alarm at $50 and $100</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-perms">
+        <span class="txt">IAM: attach Bedrock, S3 and Textract permissions to your user</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-key">
+        <span class="txt">IAM: create a CLI access key, download the .csv</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-model">
+        <span class="txt">Bedrock: confirm AI model access is granted</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-bucket">
+        <span class="txt">Create S3 bucket finsightops-&lt;team&gt;-dev</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-venv">
+        <span class="txt">Local: create venv, run pip install -r requirements.txt</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-config">
+        <span class="txt">Local: aws configure (paste keys, region us-west-2)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-sts">
+        <span class="txt">Verify: aws sts get-caller-identity returns your account</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-conn">
+        <span class="txt">Run test_connection.py → “connection ok” <span class="flag m">cloud connected</span></span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-git">
+        <span class="txt">Create a Git repo and push the skeleton</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s0-data">
+        <span class="txt">Prepare sample data (incl. 1 duplicate + 1 tampered receipt)</span></label></li></ul></section><section class="sprint">
+      <div class="sprint-head">
+        <h2>Sprint 1 — Walking skeleton</h2><span class="dates">1 – 4 Aug</span>
+        <span class="count">0/7</span>
+      </div>
+      <div class="mini"><span style="width:0%"></span></div>
+      <ul><li class="">
+        <label><input type="checkbox" data-id="s1-txt">
+        <span class="txt">Run skeleton.py on the sample .txt → STATUS: NEEDS REVIEW</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s1-img">
+        <span class="txt">Run skeleton.py on a real .png/.jpg (Textract path)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s1-s3">
+        <span class="txt">Confirm the S3 upload leg works</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s1-handler">
+        <span class="txt">Refactor skeleton.py into a Lambda handler</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s1-lambda">
+        <span class="txt">Create Lambda function + attach IAM execution role (no keys)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s1-deploy">
+        <span class="txt">Deploy to Lambda, invoke, read CloudWatch logs</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s1-done">
+        <span class="txt">Walking skeleton demoable end-to-end <span class="flag m">milestone</span></span></label></li></ul></section><section class="sprint">
+      <div class="sprint-head">
+        <h2>Sprint 2 — Specialist agents</h2><span class="dates">4 – 9 Aug</span>
+        <span class="count">0/6</span>
+      </div>
+      <div class="mini"><span style="width:0%"></span></div>
+      <ul><li class="">
+        <label><input type="checkbox" data-id="s2-pl">
+        <span class="txt">P&amp;L Analysis agent (Athena + Bedrock)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s2-bs">
+        <span class="txt">Balance Sheet agent (Lambda rules + Bedrock explain)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s2-rcpt">
+        <span class="txt">Receipt agent (Textract + hashing + Bedrock explain)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s2-recon">
+        <span class="txt">Reconciliation agent (DynamoDB + Bedrock synthesis)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s2-schema">
+        <span class="txt">Standardise the agent finding schema (shared I/O)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s2-mentor">
+        <span class="txt">Mentor session 2: architecture review (bring the running skeleton) <span class="flag c">~5 Aug</span></span></label></li></ul></section><section class="sprint">
+      <div class="sprint-head">
+        <h2>Sprint 3 — Supervisor, HITL &amp; UI</h2><span class="dates">6 – 12 Aug</span>
+        <span class="count">0/7</span>
+      </div>
+      <div class="mini"><span style="width:0%"></span></div>
+      <ul><li class="">
+        <label><input type="checkbox" data-id="s3-sup">
+        <span class="txt">Supervisor on gpt-oss-120b: routes + reconciles</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s3-wire">
+        <span class="txt">Wire supervisor → 4 specialists (parallel)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s3-sfn">
+        <span class="txt">Step Functions: human-in-the-loop approval gate</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s3-alert">
+        <span class="txt">SNS / Slack alert on flagged items</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s3-ui">
+        <span class="txt">Minimal web UI: upload → findings → approve</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s3-ac">
+        <span class="txt">(Optional) move orchestration into AgentCore</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s3-e2e">
+        <span class="txt">Full integrated end-to-end run <span class="flag m">milestone</span></span></label></li></ul></section><section class="sprint">
+      <div class="sprint-head">
+        <h2>Sprint 4 — Polish, evidence &amp; rehearse</h2><span class="dates">11 – 13 Aug</span>
+        <span class="count">0/7</span>
+      </div>
+      <div class="mini"><span style="width:0%"></span></div>
+      <ul><li class="">
+        <label><input type="checkbox" data-id="s4-cost">
+        <span class="txt">Cost evidence: Cost Explorer screenshot / estimate</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s4-rai">
+        <span class="txt">Responsible AI: explainability trace + guardrails note</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s4-mentor">
+        <span class="txt">Mentor session 3: pitch &amp; demo dry-run <span class="flag c">~12 Aug</span></span></label></li><li class="">
+        <label><input type="checkbox" data-id="s4-freeze">
+        <span class="txt">Feature freeze — stop building, start rehearsing <span class="flag c">13 Aug</span></span></label></li><li class="">
+        <label><input type="checkbox" data-id="s4-rehearse">
+        <span class="txt">Rehearse the demo with fixed inputs (×3)</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s4-deck">
+        <span class="txt">Finalise 20-min presentation + 10-min Q&amp;A</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s4-backup">
+        <span class="txt">Record a backup demo video</span></label></li></ul></section><section class="sprint">
+      <div class="sprint-head">
+        <h2>Showcase</h2><span class="dates">14 Aug</span>
+        <span class="count">0/2</span>
+      </div>
+      <div class="mini"><span style="width:0%"></span></div>
+      <ul><li class="">
+        <label><input type="checkbox" data-id="s5-deploy">
+        <span class="txt">Deploy / verify the live system</span></label></li><li class="">
+        <label><input type="checkbox" data-id="s5-present">
+        <span class="txt">Present at AWS Office, Singapore</span></label></li></ul></section></div>
+
+  <footer>
+    <button id="reset">Reset all</button>
+    <span class="saved" id="saved">(not saved — open in the app to keep progress)</span>
+  </footer>
+</div>
+
+<script>
+const KEY = "finsightops:sprint:v1";
+const SHOWCASE = new Date("2026-08-14T00:00:00");
+
+const SPRINTS = [
+  { name:"Sprint 0 — Foundations", dates:"30 Jul – 1 Aug", tasks:[
+    {id:"s0-region", text:"Set AWS region to ap-southeast-1 (Singapore); model calls go to Sydney"},
+    {id:"s0-budget", text:"Create AWS Budgets alarm at $50 and $100"},
+    {id:"s0-perms",  text:"IAM: attach Bedrock, S3 and Textract permissions to your user"},
+    {id:"s0-key",    text:"IAM: create a CLI access key, download the .csv"},
+    {id:"s0-model",  text:"Bedrock: confirm gpt-oss model access is granted"},
+    {id:"s0-bucket", text:"Create S3 bucket finsightops-&lt;team&gt;-dev"},
+    {id:"s0-venv",   text:"Local: create venv, run pip install -r requirements.txt"},
+    {id:"s0-config", text:"Local: aws configure (paste keys, region us-west-2)"},
+    {id:"s0-sts",    text:"Verify: aws sts get-caller-identity returns your account"},
+    {id:"s0-conn",   text:"Run test_connection.py → \u201cconnection ok\u201d", flag:"cloud connected", ftype:"m"},
+    {id:"s0-git",    text:"Create a Git repo and push the skeleton"},
+    {id:"s0-data",   text:"Prepare sample data (incl. 1 duplicate + 1 tampered receipt)"},
+  ]},
+  { name:"Sprint 1 — Walking skeleton", dates:"1 – 4 Aug", tasks:[
+    {id:"s1-txt",     text:"Run skeleton.py on the sample .txt → STATUS: NEEDS REVIEW"},
+    {id:"s1-img",     text:"Run skeleton.py on a real .png/.jpg (Textract path)"},
+    {id:"s1-s3",      text:"Confirm the S3 upload leg works"},
+    {id:"s1-handler", text:"Refactor skeleton.py into a Lambda handler"},
+    {id:"s1-lambda",  text:"Create Lambda function + attach IAM execution role (no keys)"},
+    {id:"s1-deploy",  text:"Deploy to Lambda, invoke, read CloudWatch logs"},
+    {id:"s1-done",    text:"Walking skeleton demoable end-to-end", flag:"milestone", ftype:"m"},
+  ]},
+  { name:"Sprint 2 — Specialist agents", dates:"4 – 9 Aug", tasks:[
+    {id:"s2-pl",     text:"P&L Analysis agent (Athena + Bedrock)"},
+    {id:"s2-bs",     text:"Balance Sheet agent (Lambda rules + Bedrock explain)"},
+    {id:"s2-rcpt",   text:"Receipt agent (Textract + hashing + Bedrock explain)"},
+    {id:"s2-recon",  text:"Reconciliation agent (DynamoDB + Bedrock synthesis)"},
+    {id:"s2-schema", text:"Standardise the agent finding schema (shared I/O)"},
+    {id:"s2-mentor", text:"Mentor session 2: architecture review (bring the running skeleton)", flag:"~5 Aug", ftype:"c"},
+  ]},
+  { name:"Sprint 3 — Supervisor, HITL & UI", dates:"6 – 12 Aug", tasks:[
+    {id:"s3-sup",   text:"Supervisor on gpt-oss-120b: routes + reconciles"},
+    {id:"s3-wire",  text:"Wire supervisor → 4 specialists (parallel)"},
+    {id:"s3-sfn",   text:"Step Functions: human-in-the-loop approval gate"},
+    {id:"s3-alert", text:"SNS / Slack alert on flagged items"},
+    {id:"s3-ui",    text:"Minimal web UI: upload → findings → approve"},
+    {id:"s3-ac",    text:"(Optional) move orchestration into AgentCore"},
+    {id:"s3-e2e",   text:"Full integrated end-to-end run", flag:"milestone", ftype:"m"},
+  ]},
+  { name:"Sprint 4 — Polish, evidence & rehearse", dates:"11 – 13 Aug", tasks:[
+    {id:"s4-cost",     text:"Cost evidence: Cost Explorer screenshot / estimate"},
+    {id:"s4-rai",      text:"Responsible AI: explainability trace + guardrails note"},
+    {id:"s4-mentor",   text:"Mentor session 3: pitch & demo dry-run", flag:"~12 Aug", ftype:"c"},
+    {id:"s4-freeze",   text:"Feature freeze — stop building, start rehearsing", flag:"13 Aug", ftype:"c"},
+    {id:"s4-rehearse", text:"Rehearse the demo with fixed inputs (×3)"},
+    {id:"s4-deck",     text:"Finalise 20-min presentation + 10-min Q&A"},
+    {id:"s4-backup",   text:"Record a backup demo video"},
+  ]},
+  { name:"Showcase", dates:"14 Aug", tasks:[
+    {id:"s5-deploy",  text:"Deploy / verify the live system"},
+    {id:"s5-present", text:"Present at AWS Office, Singapore"},
+  ]},
+];
+
+const ALL = SPRINTS.flatMap(s => s.tasks);
+let checked = new Set();
+
+async function load(){
+  if(!window.storage) return;
+  try{
+    const r = await window.storage.get(KEY, false);
+    if(r && r.value){ checked = new Set(JSON.parse(r.value)); }
+  }catch(e){ /* first run: no key yet */ }
+}
+async function save(){
+  const el = document.getElementById("saved");
+  if(!window.storage){ el.textContent = "(not saved — open in the app to keep progress)"; return; }
+  try{
+    await window.storage.set(KEY, JSON.stringify([...checked]), false);
+    const t = new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+    el.textContent = "Saved " + t + " · private to you";
+  }catch(e){ el.textContent = "Save failed — try again"; }
+}
+
+function esc(s){ return s; } // labels already escaped where needed
+
+function render(){
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  SPRINTS.forEach(sp => {
+    const done = sp.tasks.filter(t => checked.has(t.id)).length;
+    const pct = Math.round(done / sp.tasks.length * 100);
+    const sec = document.createElement("section");
+    sec.className = "sprint";
+    let li = "";
+    sp.tasks.forEach(t => {
+      const isDone = checked.has(t.id);
+      const flag = t.flag ? ` <span class="flag ${t.ftype}">${t.flag}</span>` : "";
+      li += `<li class="${isDone?'done':''}">
+        <label><input type="checkbox" data-id="${t.id}" ${isDone?'checked':''}/>
+        <span class="txt">${t.text}${flag}</span></label></li>`;
+    });
+    sec.innerHTML = `
+      <div class="sprint-head">
+        <h2>${sp.name}</h2><span class="dates">${sp.dates}</span>
+        <span class="count">${done}/${sp.tasks.length}</span>
+      </div>
+      <div class="mini"><span style="width:${pct}%"></span></div>
+      <ul>${li}</ul>`;
+    board.appendChild(sec);
+  });
+  board.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const id = cb.getAttribute("data-id");
+      if(cb.checked) checked.add(id); else checked.delete(id);
+      update(); save();
+    });
+  });
+  update();
+}
+
+function update(){
+  const done = ALL.filter(t => checked.has(t.id)).length;
+  const pct = Math.round(done / ALL.length * 100);
+  document.getElementById("pct").textContent = pct + "%";
+  document.getElementById("frac").textContent = done + " / " + ALL.length;
+  document.querySelector("#runway span").style.width = pct + "%";
+
+  const days = Math.max(0, Math.ceil((SHOWCASE - new Date()) / 86400000));
+  document.getElementById("days").textContent = days;
+
+  const box = document.getElementById("nextup");
+  const nt = document.getElementById("next-t");
+  const ns = document.getElementById("next-s");
+  let next = null, sprintName = "";
+  for(const sp of SPRINTS){
+    const hit = sp.tasks.find(t => !checked.has(t.id));
+    if(hit){ next = hit; sprintName = sp.name; break; }
+  }
+  if(next){
+    box.classList.remove("alldone");
+    nt.innerHTML = next.text;
+    ns.textContent = sprintName;
+  }else{
+    box.classList.add("alldone");
+    nt.textContent = "Everything's done — go win the showcase.";
+    ns.textContent = "";
+  }
+}
+
+document.getElementById("reset").addEventListener("click", async () => {
+  if(!confirm("Clear all ticks and start fresh?")) return;
+  checked = new Set();
+  render(); save();
+});
+
+(async function init(){
+  await load();
+  render();
+})();
+</script>
+</body></html>
