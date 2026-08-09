@@ -2,7 +2,7 @@
 
 **An Agentic AI Finance & Audit Team on AWS**
 
-AWS-native multi-agent auditing, augmented with external MCP integrations.
+A seven-agent, AWS-native pipeline that turns raw receipts and invoices into audited financial statements — with a fraud-detection agent running in parallel and a human in the loop before anything ships.
 
 ---
 
@@ -12,141 +12,135 @@ Financial close and audit is slow, manual, and error-prone — and it doesn't sc
 
 - **Weeks of manual review** — Analysts reconcile P&L, balance sheets and receipts by hand across disconnected files, a multi-day effort every cycle.
 - **Errors slip through** — Misclassified entries, foot errors and unbalanced statements are caught late, if at all, creating audit and compliance risk.
-- **Duplicate & tampered receipts** — Tampered or resubmitted receipts are near-impossible to spot at volume with the naked eye.
-- **Data lives everywhere** — Ledgers, ERP and accounting systems are siloed, so no one has a single, verifiable audit picture.
+- **Fraudulent transactions are hard to spot at volume** — A single planted or anomalous entry can hide in thousands of line items reviewed by eye.
+- **Data lives everywhere** — Ledgers and source documents are siloed, so no one has a single, verifiable audit picture.
 
 ## Our Solution
 
-A supervisor agent orchestrates four specialist agents — a virtual audit team that reviews every statement in minutes, not weeks.
+Seven specialized agents — a virtual audit team — turn a stack of receipts and invoices into a reconciled set of financial statements, with an advisory fraud check running alongside the numbers, not blocking them.
 
 **The Agent Team**
 
 | Agent | Function |
 |---|---|
-| P&L Analysis | Margins, trends & anomaly flags |
-| Balance Sheet | Assets = Liabilities + Equity checks |
-| Receipt Authenticity | Flags duplicate & tampered receipts |
-| Reconciliation | Ties receipts to P&L, unifies findings |
+| Extraction | OCR + LLM turn receipts/invoices into structured, verified line items |
+| Ledger | Double-entry bookkeeping → trial balance (debits must equal credits) |
+| Detection | Advisory-only anomaly/fraud flags off the trial balance — never gates or filters a transaction |
+| P&L | Revenue − costs → net income |
+| Balance Sheet | Assets = Liabilities + Equity, using P&L's net income |
+| Reconciliation + Tie-out | Checks records agree and statements are internally consistent — the heaviest reasoning agent |
+| Report Generator | Narrative report to PDF, folding in the trial balance, both statements, reconciliation, and Detection's findings |
 
 **How It Works**
 
-1. **Ingest** — Users upload P&L, balance sheet & receipts. Textract extracts every figure.
-2. **Reason** — Supervisor routes work to specialist agents; each pulls its own AWS + MCP tools.
-3. **Reconcile** — Findings are cross-checked; flagged items go to a human for approval.
+1. **Ingest** — A document lands in S3; Textract `AnalyzeExpense` extracts every figure.
+2. **Extract & review** — The Extraction agent produces structured JSON; a human reviews before it becomes ledger data.
+3. **Post to the ledger** — The Ledger agent posts double-entry transactions into a trial balance — nothing is written unless debits equal credits.
+4. **Fan out** — From the trial balance, two independent branches run: Detection (advisory fraud/anomaly flags) and P&L → Balance Sheet (the one true ordering constraint in the pipeline: the balance sheet's equity section needs the P&L's net income).
+5. **Reconcile** — Both statement branches and Detection's findings rejoin at Reconciliation + Tie-out.
+6. **Report & review** — The Report Generator produces the narrative + PDF; a second human review signs off before the dashboard shows it.
 
 ### In Plain Terms
 
-1. **Upload** — P&L, balance sheet, receipts
-2. **AI team reviews** — Every figure read & checked
-3. **Findings sorted** — Clean pass · risky flagged
-4. **Human approves** — Reviewer signs off flagged items
-5. **Report** — Dashboard + team notified
+1. **Upload** — receipts and invoices
+2. **AI team reviews** — every figure extracted, posted, and checked
+3. **Findings sorted** — clean statements · flagged exceptions disclosed separately, never used to alter the books
+4. **Human approves** — twice: once after extraction, once before the report ships
+5. **Report** — dashboard shows statements + any fraud flags
 
-> Weeks of manual review become minutes — with a human always approving anything risky.
+> Weeks of manual review become minutes — with a human approving at both ends and every number traceable back to Python arithmetic, not model guesswork.
 
 ## Architecture
 
-The system moves a document from upload to approved audit through four layers:
+```
+1  Ingestion (S3 + EventBridge)
+        |
+2  EXTRACTION AGENT — Textract AnalyzeExpense + Bedrock Sonnet -> contract JSON
+        |
+3  Human review #1
+        |
+4  LEDGER AGENT — double-entry -> TRIAL BALANCE
+        |
+   +----+----+
+   |         |
+5 DETECTION   6 P&L -> 7 BALANCE SHEET (needs P&L's net income)
+   |         |
+   +----+----+
+        |
+8  RECONCILIATION + TIE-OUT AGENT
+        |
+9  REPORT GENERATOR AGENT — narrative + PDF to S3
+        |
+10  Human review #2
+        |
+11  Dashboard
+        |
+12  Orchestrator — runner Lambda now, Step Functions later
+```
 
-- **Users & web** — CloudFront · Cognito · API Gateway
-- **Orchestration** — Amazon Bedrock AgentCore (supervisor agent routes & reconciles)
-- **Ingestion** — Amazon S3 · Textract OCR
-- **Specialist agents** — P&L · Balance · Receipt · Reconciliation (4 agents)
-- **External MCP (via Gateway)** — QuickBooks · SAP · SEC EDGAR · Slack
-- **AWS tooling** — Athena · Lambda · DynamoDB
-- **Human-in-the-loop & output** — Step Functions · SNS/Slack · QuickSight
-- **Security (cross-cutting)** — Secrets Manager · IAM least-privilege · no hardcoded credentials
+**Region & model.** Everything runs in **`ap-southeast-1` (Singapore)**. The reasoning engine is **Claude Sonnet 4.5 or 4.6** — pricing is identical, so it's chosen per agent — invoked through a **cross-Region inference profile** (`global.anthropic.claude-sonnet-4-5...` / `...-4-6...`), never a bare model ID, since newer Claude models aren't directly callable in this region. Claude Sonnet 5 is not available here and is not part of that choice.
 
-### Sequence — A Single Audit Run
+**Detection is advisory, by design.** It reads the trial balance, writes only its own findings, and rejoins at the Report Generator. It never filters, excludes, or gates a transaction — an audit reports the numbers as they are and discloses exceptions separately.
 
-| Step | Action |
-|---|---|
-| 1 | Upload docs · Cognito auth |
-| 2 | Trigger audit run (S3) |
-| 3 | Textract OCR → figures |
-| 4 | Route work → agents (parallel) |
-| 5 | AWS tools + MCP lookups |
-| 6 | Return explainable findings |
-| 7 | Reconcile · flagged → human approval |
-| 8 | Report + dashboard · Slack alert |
+**Deterministic math, LLM judgment.** All arithmetic — totals, P&L sums, balance checks — runs in Python. Bedrock Sonnet is used only for categorization, edge cases, and narrative. Money is `Decimal`, two decimal places, never `float`.
 
 ## AWS Services & Their Functions
 
 | Service | Function |
 |---|---|
-| Bedrock AgentCore | Runtime + Gateway that hosts and orchestrates the agent team |
-| Amazon Bedrock (Claude) | Reasoning engine for analysis, explanation & synthesis |
-| Amazon Textract | OCR — extracts figures from statements & receipts |
-| Amazon S3 | Encrypted document store for all uploaded artifacts |
-| Amazon Athena | Queries historical financials for anomaly baselines |
-| AWS Lambda | Serverless rules engine for balance-sheet checks |
-| Amazon Rekognition + Textract | Duplicate & tamper heuristics: metadata, hashing, vision |
-| Amazon DynamoDB | Low-latency cross-checks across the three documents |
-| AWS Step Functions | Human-in-the-loop approval workflow for flagged items |
-| Amazon QuickSight | Audit dashboards & the final report |
-| Amazon SNS | Real-time alerts to reviewers on flagged findings |
-| Secrets Manager + IAM | No hardcoded credentials — least-privilege access |
+| Amazon Bedrock — Claude Sonnet 4.5/4.6 | Reasoning engine in every agent: categorization, edge cases, narrative |
+| Amazon Textract — AnalyzeExpense | OCR purpose-built for receipts & invoices |
+| Amazon S3 | Document store for uploads and generated report PDFs (`ap-southeast-1`, co-located with Textract) |
+| AWS Lambda | Runs every agent's Python code |
+| Amazon DynamoDB | Stores the ledger, trial balance, statements, and reconciliation results |
+| Amazon API Gateway | HTTP endpoints for the dashboard |
+| Amazon Cognito | Auth for both human-review steps and the dashboard |
+| Amazon CloudWatch | Logs + Bedrock TPM/RPM quota alarms (throttling is a demo-killer) |
+| AWS IAM + KMS | Least-privilege access, including the inference-profile ARN grant; encryption at rest |
+| Amazon SNS | Alerts when Detection flags something |
+| Amazon EventBridge / S3 Events | Triggers the pipeline on upload |
+| AWS Step Functions *(later)* | True orchestrator — parallel Detection / P&L↔Balance Sheet branches, replacing the sequential runner Lambda |
 
-## External MCP Integrations
-
-Agents reach real systems of record through Model Context Protocol servers, surfaced as tools via AgentCore Gateway.
-
-- **QuickBooks / Xero MCP** — Pulls live ledger entries, invoices and expense records so agents audit against the real books, not a stale export.
-- **SAP / ERP MCP** — Reads enterprise financial master data and journal entries for org-wide statements and cross-entity reconciliation.
-- **Regulatory MCP (SEC EDGAR / tax rules)** — Validates classifications and disclosures against current filing and tax rules for compliance-grade findings.
-- **Slack / Teams MCP** — Routes flagged items and approval requests to reviewers in-channel, closing the human-in-the-loop instantly.
-
-**Why MCP:** standardised, credential-scoped tool access means we plug into any system of record without custom glue code — and swap providers without touching the agents.
+A single runner Lambda walks the pipeline sequentially for the hackathon; the fan-out/merge shape above is the *dependency* structure Step Functions will implement as true concurrency later.
 
 ## Cost Breakdown
 
-Estimated hackathon-MVP spend for one 4-week hack period — serverless & on-demand keep it well under the $100 credit.
+Region is `ap-southeast-1`; budget ceiling is **$200**. At hackathon scale (dozens of demo docs, a few hundred dev runs), real spend is single-digit dollars — the table below is illustrative of the two cost drivers, not a hard forecast.
 
-| Category | USD |
-|---|---|
-| Bedrock (Claude) inference | $24.0 |
-| Textract OCR | $6.0 |
-| Rekognition (tamper + dup checks) | $10.0 |
-| QuickSight | $9.0 |
-| Athena + DynamoDB | $5.0 |
-| AgentCore Runtime | $8.0 |
-| Lambda + Step Functions | $2.0 |
-| S3 + SNS + Secrets Manager | $3.0 |
-| **Estimated total / hack period** | **$67** |
+| Service | Price | Notes |
+|---|---|---|
+| Bedrock — Claude Sonnet 4.5/4.6 | $3 / $15 per 1M input/output tokens | Prompt caching (~90% reduction on repeated input) is the biggest lever — every agent's static system prompt + few-shot examples should be cached |
+| Textract — AnalyzeExpense | ~$10 / 1,000 pages | Use this API specifically; Forms/Tables cost more and aren't a better fit for invoices |
+| S3, Lambda, DynamoDB, API Gateway, Cognito, CloudWatch, IAM/KMS, SNS, EventBridge | ~$0 at this volume | Free tier covers hackathon-scale usage |
 
-vs. $100 AWS credit · ~33% headroom. External MCP servers run on the vendor side — $0 AWS compute, only minimal egress.
-
-- Serverless (Lambda, Step Functions, on-demand DynamoDB) means we pay only per audit run.
-- FinOps guardrails: Bedrock token caps, AgentCore session timeouts, CloudWatch budget alarms.
+**Guardrails:** billing alarms at $50/$100/$150; CloudWatch alarms on Bedrock TPM/RPM at 70–80% quota; 7-day log retention; confirm every resource is in `ap-southeast-1` (a bucket in `us-east-1` silently breaks Textract).
 
 ## MVP Scope — What We Demo
 
-Scoped to what we can build and demo in the hack window — everything else is on the roadmap.
-
 **In scope**
-- The agent team: supervisor + specialist agents (P&L, balance sheet, receipt, reconciliation), running end-to-end on AWS.
-- The core flow: Upload → Textract OCR → agents reason → Step Functions human approval → SNS/Slack alert + report.
-- One live integration: one real MCP connector live (SEC EDGAR or QuickBooks sandbox); remaining systems of record are mocked.
+- The seven-agent pipeline running end-to-end on AWS in `ap-southeast-1`, sequenced by a runner Lambda.
+- The core flow: upload → Textract OCR → Extraction → human review #1 → Ledger (trial balance) → Detection ‖ P&L→Balance Sheet → Reconciliation + Tie-out → Report Generator → human review #2 → Dashboard.
+- A planted fraud transaction in the sample data set, flagged by Detection and surfaced on the dashboard — the demo's wow moment, decoupled from the statement critical path.
 
-**Deferred to v2**
-- Amazon Fraud Detector, full QuickSight seats, and live SAP / ERP — all on the 3-month roadmap.
+**Deferred to later**
+- Step Functions as the true concurrent orchestrator (runner Lambda stands in for now).
+- Data masking (Macie/Comprehend), Bedrock Guardrails, managed human review (A2I), a dedicated fraud model (Fraud Detector/SageMaker), and a polished BI dashboard (QuickSight) — named on the roadmap, not built for the hackathon.
 
-**Guardrails held:** AWS-native only · $100 credit (est. $67) · team-level impact · live demo · no hardcoded credentials.
+**Guardrails held:** AWS-native only (Bedrock, Textract, S3, Lambda, DynamoDB, API Gateway, Cognito, plus the near-free supporting services) · $200 budget · live demo with a recorded fallback · no hardcoded credentials.
 
 ## Responsible AI
 
-- **Explainable** — Each agent returns an independent, traceable finding — no black-box verdicts.
-- **Governed** — Bedrock Guardrails + full observability on every agent action.
-- **Human-in-the-loop** — No flagged item is actioned without human approval via Step Functions.
+- **Explainable** — Every number traces back to Python arithmetic; Sonnet's role is limited to categorization and narrative, never silent computation.
+- **Advisory, not authoritative** — Detection flags and reports; it never restates or filters the ledger. Exceptions are disclosed alongside the statements, not baked into them.
+- **Human-in-the-loop** — Two review gates: after extraction (before data becomes ledger entries) and before the final report ships.
 
-## Roadmap — v2 in 3 Months
+## Roadmap
 
-| Milestone | Timeline | Focus |
-|---|---|---|
-| Now | — | 4 agents, 3 document types, single-team demo on AWS |
-| +1 mo | Month 1 | Add cash-flow & tax agents; Fraud Detector, QuickSight seats, connectors (NetSuite, Workday) |
-| +2 mo | Month 2 | Continuous audit — auto-trigger on new uploads via S3 events |
-| +3 mo | Month 3 | Org-wide rollout with per-entity dashboards and SSO |
+| Milestone | Focus |
+|---|---|
+| Now | Seven agents, sequential runner Lambda, single-team demo on AWS |
+| Next | Step Functions for true parallel fan-out (Detection ‖ P&L→Balance Sheet) |
+| Later | Data masking (Macie/Comprehend), Bedrock Guardrails, managed review (A2I), dedicated fraud model, QuickSight dashboards |
 
 ---
 
