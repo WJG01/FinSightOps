@@ -63,7 +63,7 @@ REGION          = "ap-southeast-1"
 DYNAMO_TABLE    = os.environ.get("DYNAMO_TABLE", "auditai-ledger")
 BEDROCK_PROFILE = os.environ.get("BEDROCK_PROFILE_ID")   # MUST be set
 MAX_TOKENS      = 512       # categorisation needs very few output tokens
-SCHEMA_VERSION  = "1.1"
+SCHEMA_VERSION  = "1.1"   # aligned with extraction agent's SCHEMA_VERSION
 TWO_PLACES      = Decimal("0.01")
 
 # Single source of truth for the chart of accounts.
@@ -151,6 +151,17 @@ def ds(value: Decimal) -> str:
     return str(value.quantize(TWO_PLACES))
 
 
+def account_meta(code: str) -> dict:
+    """
+    Look up an account's name and type from the chart of accounts.
+    Used to stamp every journal entry with human-readable, filterable
+    metadata (account_name / account_type) so downstream agents — P&L,
+    Balance Sheet, Reconciliation — never need their own copy of the
+    chart to answer "is this revenue or an expense?"
+    """
+    return CHART_OF_ACCOUNTS.get(code, {"name": "Unknown", "type": "Unknown"})
+
+
 # ── Bedrock categoriser ────────────────────────────────────────────────────
 
 def categorize_line_items(line_items: list[dict]) -> dict[int, dict]:
@@ -202,7 +213,7 @@ def categorize_line_items(line_items: list[dict]) -> dict[int, dict]:
     )
 
     raw_text = json.loads(resp["body"].read())["content"][0]["text"].strip()
- 
+
     # Claude sometimes wraps output in markdown fences despite instructions
     # not to. Strip them the same way extraction's code already does.
     if raw_text.startswith("```"):
@@ -210,7 +221,7 @@ def categorize_line_items(line_items: list[dict]) -> dict[int, dict]:
         if raw_text.startswith("json"):
             raw_text = raw_text[4:]
         raw_text = raw_text.strip()
- 
+
     # parse_float=Decimal is defensive — we don't expect floats in
     # classification output, but this guarantees none sneak through.
     try:
@@ -222,7 +233,7 @@ def categorize_line_items(line_items: list[dict]) -> dict[int, dict]:
             f"Claude's response wasn't valid JSON after fence-stripping: "
             f"{exc}. Raw text (first 300 chars): {raw_text[:300]!r}"
         ) from exc
- 
+
     return {item["line_no"]: item for item in parsed["classifications"]}
 
 
@@ -236,10 +247,13 @@ def post_expense_doc(doc: dict) -> list[dict]:
       outflow (we paid / received invoice):
         DEBIT  <classified expense/COGS account>
         CREDIT 1000 Cash
+        (+ tax, if any: DEBIT 6500, CREDIT 1000)
 
       inflow (we issued this invoice, money owed to us):
         DEBIT  1100 Accounts Receivable
         CREDIT 4000 Revenue
+        (+ tax, if any: DEBIT 1100, CREDIT 2000 — stand-in liability,
+         see note below on why 2000 is used)
 
     Returns expense-style entries with keys:
       entry_id, date, description, debit_account, credit_account,
@@ -299,21 +313,56 @@ def post_expense_doc(doc: dict) -> list[dict]:
         })
 
     # Post tax as a separate entry if present and non-zero.
-    # We don't have a dedicated GST account in this chart, so we use 6500
-    # (the most common category for vendor taxes in this context).
+    #
+    # Outflow: we don't have a dedicated GST account in this chart, so we
+    # use 6500 (the most common category for vendor taxes in this context).
+    #
+    # Inflow: tax the client owes us is NOT our revenue — it's collected on
+    # behalf of the tax authority, so crediting it to 4000 Revenue would
+    # overstate revenue. There's no dedicated Tax Payable account in the
+    # current chart, so 2000 Accounts Payable is used as a documented
+    # stand-in liability (closest existing liability account). AR is debited
+    # the tax amount too, so Accounts Receivable correctly reflects the full
+    # amount the client owes (subtotal + tax), matching extraction's
+    # total_amount. Revisit if/when a dedicated Tax Payable account is added.
     tax = d(doc.get("tax_amount") or 0)
-    if tax > 0 and direction == "outflow":
-        entries.append({
-            "entry_id":       str(uuid.uuid4()),
-            "date":           doc_date,
-            "description":    f"Tax on {doc.get('reference', doc_id)}",
-            "debit_account":  "6500",
-            "credit_account": "1000",
-            "amount":         tax,
-            "confidence":     "high",
-            "source_doc_id":  doc_id,
-            "line_no":        0,
-        })
+    if tax > 0:
+        if direction == "outflow":
+            entries.append({
+                "entry_id":       str(uuid.uuid4()),
+                "date":           doc_date,
+                "description":    f"Tax on {doc.get('reference', doc_id)}",
+                "debit_account":  "6500",
+                "credit_account": "1000",
+                "amount":         tax,
+                "confidence":     "high",
+                "source_doc_id":  doc_id,
+                "line_no":        0,
+            })
+        else:
+            entries.append({
+                "entry_id":       str(uuid.uuid4()),
+                "date":           doc_date,
+                "description":    f"Tax on {doc.get('reference', doc_id)} (stand-in: no Tax Payable account yet)",
+                "debit_account":  "1100",
+                "credit_account": "2000",
+                "amount":         tax,
+                "confidence":     "low",
+                "source_doc_id":  doc_id,
+                "line_no":        0,
+            })
+
+    # Stamp every entry with account name/type — lets P&L, Balance Sheet,
+    # and Reconciliation filter/aggregate by account_type (Revenue, COGS,
+    # Expense, Asset, Liability, Equity) without duplicating the chart of
+    # accounts themselves.
+    for e in entries:
+        debit_meta  = account_meta(e["debit_account"])
+        credit_meta = account_meta(e["credit_account"])
+        e["debit_account_name"]  = debit_meta["name"]
+        e["debit_account_type"]  = debit_meta["type"]
+        e["credit_account_name"] = credit_meta["name"]
+        e["credit_account_type"] = credit_meta["type"]
 
     return entries
 
@@ -353,6 +402,7 @@ def post_tabular_doc(doc: dict) -> list[dict]:
             "date":         doc_date,
             "description":  acct.get("account_name", ""),
             "account_code": code,
+            "account_type": account_meta(code)["type"],
             "debit":        debit,
             "credit":       credit,
             "source_doc_id": doc_id,
