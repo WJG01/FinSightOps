@@ -8,8 +8,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email import policy
 
 import boto3
-from boto3.dynamodb.conditions import Attr, Key
-from botocore.exceptions import ClientError
 
 REGION = "ap-southeast-1"
 
@@ -24,138 +22,22 @@ BUCKET = "auditai-raw-docs-203475186003-ap-southeast-1-an"
 # Sonnet 4.6. Confirm the exact string with:
 #   aws bedrock list-inference-profiles --region ap-southeast-1
 # The 'global.' prefix is already proven working in this account.
-MODEL_ID = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
-SCHEMA_VERSION = "1.2"      # 1.2 adds quarter foldering
+SCHEMA_VERSION = "1.1"
 
 # Textract routing. Receipts and invoices have expense semantics; statements,
 # ledgers and journals are tables and need AnalyzeDocument instead.
-ALLOWED_DOC_TYPES = {
-    "receipt", "invoice", "purchase_invoice",
-    "statement", "bank_statement", "balance_sheet",
-    "trial_balance", "ledger", "journal",
-}
+# AFTER
+ALLOWED_DOC_TYPES = {"receipt", "invoice", "purchase_invoice", "statement",
+                     "trial_balance", "ledger", "journal"}
 EXPENSE_TYPES = {"receipt", "invoice", "purchase_invoice"}
-TABULAR_TYPES = ALLOWED_DOC_TYPES - EXPENSE_TYPES   # derived, so it cannot drift
-
-# What a quarter folder must contain before it is considered auditable.
-REQUIRED_PER_QUARTER = {"receipt", "invoice", "bank_statement", "balance_sheet"}
-
+TABULAR_TYPES = {"statement", "trial_balance", "ledger", "journal"}
 BASE_CURRENCY = "MYR"
 CONFIDENCE_THRESHOLD = 80.0
 
 MONEY = Decimal("0.01")     # every amount quantized to exactly 2 places
 ZERO = Decimal("0.00")
-
-
-# ===========================================================================
-# Quarter derivation and S3 layout
-#
-# Final layout in the bucket:
-#
-#   Q1-2026/
-#     receipt/<run_id>/<doc_id>_<filename>
-#     invoice/<run_id>/...
-#     bank_statement/<run_id>/...
-#     balance_sheet/<run_id>/...
-#   Q2-2026/
-#     ...
-#   UNDATED/          <- document date unreadable, needs a human to refile
-#   _quarantine/      <- extraction failed, bytes kept so nothing is lost
-#
-# The object is written ONCE, straight to its final key, after the quarter is
-# known. No copy, no delete - the role only ever needs s3:PutObject.
-# ===========================================================================
-
-QUARANTINE_PREFIX = "_quarantine"
-UNDATED = "UNDATED"
-
-# 1 = calendar quarters (Jan-Mar is Q1). Set to 4 for an Apr-Mar fiscal year,
-# 7 for Jul-Jun, etc. The year label follows the fiscal year start.
-FISCAL_YEAR_START_MONTH = 1
-
-QUARTER_RE = re.compile(r"^Q([1-4])-(\d{4})$")
-
-
-def quarter_from_date(date_str) -> str | None:
-    """'2026-03-14' -> 'Q1-2026'. None if the date is missing or unparseable."""
-    if not date_str:
-        return None
-    try:
-        d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
-    except (ValueError, TypeError):
-        return None
-
-    offset = (d.month - FISCAL_YEAR_START_MONTH) % 12
-    quarter = offset // 3 + 1
-    year = d.year if d.month >= FISCAL_YEAR_START_MONTH else d.year - 1
-    return f"Q{quarter}-{year}"
-
-
-def normalize_quarter(value) -> str | None:
-    """Accept a client-supplied 'q1-2026' / 'Q1-2026'. None if malformed."""
-    if not value:
-        return None
-    candidate = str(value).strip().upper()
-    return candidate if QUARTER_RE.match(candidate) else None
-
-
-def document_date_for(document: dict) -> str | None:
-    """The date that decides which quarter a document belongs to."""
-    if document.get("kind") == "tabular":
-        period = document.get("period") or {}
-        return period.get("end") or period.get("start")
-    return document.get("document_date")
-
-
-def build_s3_key(quarter, doc_type, run_id, doc_id, filename) -> str:
-    return f"{quarter}/{doc_type}/{run_id}/{doc_id}_{filename}"
-
-
-def ensure_quarter_folders(quarter: str) -> list[str]:
-    """S3 has no real folders, so drop zero-byte markers. This makes the
-    quarter - and every doc type still missing from it - visible in the
-    console instead of the folder silently not existing.
-
-    Re-putting an existing marker is harmless and idempotent, so this does
-    not read first. Cosmetic only: a failure here must never sink an
-    otherwise good ingest, so it is swallowed and reported."""
-    warnings: list[str] = []
-    keys = [f"{quarter}/"] + [f"{quarter}/{t}/" for t in sorted(REQUIRED_PER_QUARTER)]
-    for key in keys:
-        try:
-            s3.put_object(Bucket=BUCKET, Key=key, Body=b"")
-        except ClientError as e:
-            warnings.append(f"could not create folder marker {key}: {e.response['Error']['Code']}")
-    return warnings
-
-
-def quarter_status(run_id: str, quarter: str) -> dict:
-    """Which of the four required documents this quarter now holds.
-    Consistent read so the document just written is counted."""
-    present: set[str] = set()
-    kwargs = {
-        "KeyConditionExpression": Key("run_id").eq(run_id),
-        "FilterExpression": Attr("quarter").eq(quarter) & Attr("status").ne("failed"),
-        "ProjectionExpression": "doc_type",
-        "ConsistentRead": True,
-    }
-    while True:
-        resp = table.query(**kwargs)
-        for item in resp.get("Items", []):
-            if item.get("doc_type"):
-                present.add(item["doc_type"])
-        if "LastEvaluatedKey" not in resp:
-            break
-        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
-
-    missing = sorted(REQUIRED_PER_QUARTER - present)
-    return {
-        "quarter": quarter,
-        "present": sorted(present),
-        "missing": missing,
-        "complete": not missing,
-    }
 
 
 # ===========================================================================
@@ -240,8 +122,7 @@ def read_expense(file_bytes: bytes) -> dict:
 
 def read_tables(file_bytes: bytes) -> dict:
     """AnalyzeDocument with TABLES only (~$15/1k). Statements, ledgers,
-    journals, balance sheets, trial balances - anything whose meaning lives
-    in a grid.
+    journals, trial balances - anything whose meaning lives in a grid.
 
     Textract's table grid only covers cells inside detected TABLE blocks.
     Page-level text (titles, company name, currency, dates) lives in plain
@@ -345,11 +226,11 @@ SCHEMA
 
 
 # NOTE: this is deliberately a DIFFERENT schema from EXTRACTION_SYSTEM above.
-# A trial balance / ledger / journal / balance sheet has no vendor and no
-# single total - it has rows of accounts, each with a debit and a credit.
+# A trial balance / ledger / journal has no vendor and no single total - it
+# has rows of accounts, each with a debit and a credit.
 TABULAR_EXTRACTION_SYSTEM = """You normalise OCR table output from an
-accounting document (trial balance, general ledger, journal, balance sheet,
-bank statement, or financial statement) onto a fixed JSON schema.
+accounting document (trial balance, general ledger, journal, or financial
+statement) onto a fixed JSON schema.
 
 HARD RULES
 - Reply with a single JSON object. No markdown fences, no preamble.
@@ -361,16 +242,13 @@ HARD RULES
 - Each row becomes one entry in "accounts". A row with only a debit has
   credit: 0.00 (not null) and vice versa - do not omit missing side.
 - Do not classify, categorise, or reconcile. That is a downstream job.
-- The reporting period decides which quarter this document is filed under,
-  so it matters. If a period is stated, extract start/end as YYYY-MM-DD. If
-  only a single year or "as at" date is printed, set start to null and put
-  that single date in "end". If no date is printed anywhere, set both to
-  null and add "period" to unreadable_fields.
+- If the reporting period is stated, extract start/end as YYYY-MM-DD. If
+  only a single year or "as at" date, set start to null and put the single
+  date in "end".
 
 SCHEMA
 {
-  "document_type": "trial_balance" | "ledger" | "journal" | "statement"
-                   | "bank_statement" | "balance_sheet",
+  "document_type": "trial_balance" | "ledger" | "journal" | "statement",
   "company": string or null,
   "period": {"start": "YYYY-MM-DD" or null, "end": "YYYY-MM-DD" or null},
   "currency": "ISO 4217 code",
@@ -624,23 +502,16 @@ def lambda_handler(event, context):
                      f'{", ".join(sorted(ALLOWED_DOC_TYPES))}'
         })
 
-    # Optional. Lets the uploader pin a document to a quarter when the
-    # printed date is unreliable, or file a Dec-31 invoice into the next
-    # quarter deliberately. Empty means "derive it from the document".
-    requested_quarter_raw = fields.get("quarter")
-    requested_quarter = normalize_quarter(requested_quarter_raw)
-    if requested_quarter_raw and not requested_quarter:
-        return response(400, {
-            "error": f'Invalid quarter "{requested_quarter_raw}". Expected Q1-2026 format.'
-        })
-
     content_hash = hashlib.sha256(file_bytes).hexdigest()
     doc_id = content_hash[:12]
+    s3_key = f"{doc_type}/{run_id}/{doc_id}_{filename}"
 
     existing = table.get_item(
         Key={"run_id": run_id, "doc_type_id": f"{doc_type}#{doc_id}"}
     ).get("Item")
     upload_count = int(existing.get("upload_count", 1)) + 1 if existing else 1
+
+    s3.put_object(Bucket=BUCKET, Key=s3_key, Body=file_bytes)
 
     # Extraction runs on the bytes already in memory - nothing is written to
     # S3 until the quarter is known, so the object is only ever PUT once.
@@ -648,13 +519,15 @@ def lambda_handler(event, context):
     try:
         ocr = read_document(file_bytes, doc_type)
         claude = normalize_with_claude(ocr["text"], doc_type)
-        builder = build_tabular_document if doc_type in TABULAR_TYPES else build_document
-        document = builder(run_id, doc_type, doc_id, content_hash, None, claude, ocr)
+        if doc_type in TABULAR_TYPES:
+            document = build_tabular_document(
+                run_id, doc_type, doc_id, content_hash, s3_key, claude, ocr
+            )
+        else:
+            document = build_document(
+                run_id, doc_type, doc_id, content_hash, s3_key, claude, ocr
+            )
     except Exception as e:
-        # Extraction died, so there is no date and no quarter. Keep the bytes
-        # anyway - re-uploading is the caller's problem otherwise.
-        quarantine_key = f"{QUARANTINE_PREFIX}/{run_id}/{doc_type}/{doc_id}_{filename}"
-        s3.put_object(Bucket=BUCKET, Key=quarantine_key, Body=file_bytes)
         table.put_item(Item={
             "run_id": run_id,
             "doc_type_id": f"{doc_type}#{doc_id}",
@@ -662,72 +535,41 @@ def lambda_handler(event, context):
             "status": "failed",
             "error": str(e),
             "content_hash": f"sha256:{content_hash}",
-            "quarter": requested_quarter or UNDATED,
-            "raw_textract_ref": quarantine_key,
+            "raw_textract_ref": s3_key,
             "ingested_at": datetime.now(timezone.utc).isoformat(),
         })
-        return response(500, {
-            "error": "Extraction failed",
-            "detail": str(e),
-            "doc_id": doc_id,
-            "s3_key": quarantine_key,
-        })
+        return response(500, {"error": "Extraction failed", "detail": str(e), "doc_id": doc_id})
 
-    # ---- decide the quarter, then file the object under it -----------------
-    derived_quarter = quarter_from_date(document_date_for(document))
-    quarter = requested_quarter or derived_quarter or UNDATED
-
-    if requested_quarter and derived_quarter and requested_quarter != derived_quarter:
-        document["review_reasons"].append(
-            f"document date falls in {derived_quarter} but it was filed under "
-            f"{requested_quarter}"
-        )
-    if quarter == UNDATED:
-        document["review_reasons"].append(
-            "no readable document date; filed under UNDATED pending manual refiling"
-        )
-
-    final_key = build_s3_key(quarter, doc_type, run_id, doc_id, filename)
-    document["review_reasons"].extend(ensure_quarter_folders(quarter))
-    s3.put_object(Bucket=BUCKET, Key=final_key, Body=file_bytes)
-
-    if document["review_reasons"]:
-        document["status"] = "pending_review"
-
-    document["quarter"] = quarter
-    document["derived_quarter"] = derived_quarter
-    document["raw_textract_ref"] = final_key
     document["upload_count"] = upload_count
     table.put_item(Item=to_dynamo(document))
 
-    coverage = quarter_status(run_id, quarter)
-
     # Response shape differs by document kind - an accounts-based document
     # has no single total_amount, an expense-based one has no accounts[].
-    common = {
-        "doc_id": doc_id,
-        "run_id": run_id,
-        "status": document["status"],
-        "duplicate_upload": upload_count > 1,
-        "review_reasons": document["review_reasons"],
-        "quarter": quarter,
-        "quarter_coverage": coverage,
-        "currency": document["currency"],
-        "s3_key": final_key,
-    }
 
     if document["kind"] == "tabular":
         out = {
-            **common,
+            "doc_id": doc_id,
+            "run_id": run_id,
+            "status": document["status"],
+            "duplicate_upload": upload_count > 1,
+            "review_reasons": document["review_reasons"],
             "total_debit": str(document["total_debit"]),
             "total_credit": str(document["total_credit"]),
+            "currency": document["currency"],
             "account_count": len(document["accounts"]),
+            "s3_key": s3_key,
         }
     else:
         out = {
-            **common,
+            "doc_id": doc_id,
+            "run_id": run_id,
+            "status": document["status"],
+            "duplicate_upload": upload_count > 1,
+            "review_reasons": document["review_reasons"],
             "total_amount": str(document["total_amount"]),
+            "currency": document["currency"],
             "display_total": money_str(document["total_amount"], document["currency"]),
+            "s3_key": s3_key,
         }
 
     return response(200, out)
