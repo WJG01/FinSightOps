@@ -29,16 +29,16 @@ export default function LandingPage({ showPage }) {
           <div className="feature-icon">📊</div>
           <h3>P&amp;L Analysis</h3>
           <p>
-            Reads statements, computes margins, detects line items that
-            deviate from historical baselines.
+            Reads statements, computes margins, detects line items that deviate
+            from historical baselines.
           </p>
         </div>
         <div className="feature-card" onClick={() => showPage("balance")}>
           <div className="feature-icon">⚖️</div>
           <h3>Balance Sheet</h3>
           <p>
-            Verifies the accounting identity, checks totals foot correctly,
-            and spots misclassified entries.
+            Verifies the accounting identity, checks totals foot correctly, and
+            spots misclassified entries.
           </p>
         </div>
         <div className="feature-card" onClick={() => showPage("receipts")}>
@@ -56,6 +56,11 @@ export default function LandingPage({ showPage }) {
             Cross-checks all three sources, ensures receipts tie to P&amp;L
             expenses, compiles unified findings.
           </p>
+        </div>
+        <div className="feature-card" onClick={() => showPage("upload")}>
+          <div className="feature-icon">🔗</div>
+          <h3>Upload</h3>
+          <p>Upload your raw documents here.</p>
         </div>
       </div>
     </div>

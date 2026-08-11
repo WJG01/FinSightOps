@@ -4,6 +4,7 @@ import { useState } from "react";
 import Nav from "./Nav";
 import LandingPage from "./LandingPage";
 import DashboardPage from "./DashboardPage";
+import DocUploadPage from "./DocUploadPage";
 import PLPage from "./PLPage";
 import BalancePage from "./BalancePage";
 import ReceiptsPage from "./ReceiptsPage";
@@ -27,6 +28,7 @@ export default function App() {
       <div className="page">
         {page === "landing" && <LandingPage showPage={showPage} />}
         {page === "dashboard" && <DashboardPage showPage={showPage} />}
+        {page === "upload" && <DocUploadPage />}
         {page === "pl" && <PLPage />}
         {page === "balance" && <BalancePage />}
         {page === "receipts" && <ReceiptsPage />}

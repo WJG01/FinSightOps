@@ -2,6 +2,7 @@
 
 const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "upload", label: "Upload Doc" },
   { id: "pl", label: "P&L Analysis" },
   { id: "balance", label: "Balance Sheet" },
   { id: "receipts", label: "Receipts" },
