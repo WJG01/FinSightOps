@@ -28,9 +28,10 @@ SCHEMA_VERSION = "1.1"
 
 # Textract routing. Receipts and invoices have expense semantics; statements,
 # ledgers and journals are tables and need AnalyzeDocument instead.
-ALLOWED_DOC_TYPES = {"receipt", "invoice", "statement",
+# AFTER
+ALLOWED_DOC_TYPES = {"receipt", "invoice", "purchase_invoice", "statement",
                      "trial_balance", "ledger", "journal"}
-EXPENSE_TYPES = {"receipt", "invoice"}
+EXPENSE_TYPES = {"receipt", "invoice", "purchase_invoice"}
 TABULAR_TYPES = {"statement", "trial_balance", "ledger", "journal"}
 
 BASE_CURRENCY = "MYR"
@@ -355,7 +356,7 @@ def build_document(run_id, doc_type, doc_id, content_hash, s3_key,
         "document_id": f"{doc_type}#{doc_id}",
         "content_hash": f"sha256:{content_hash}",
         "doc_type": doc_type,
-        "direction": "inflow" if doc_type == "invoice" else "outflow",
+        "direction": "outflow" if doc_type in {"receipt", "purchase_invoice"} else "inflow",
         "status": "pending_review" if review_reasons else "normalized",
         "currency": currency,
         "document_date": claude.get("date"),
