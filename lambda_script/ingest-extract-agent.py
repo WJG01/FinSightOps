@@ -1,373 +1,583 @@
-"""
+import base64
+import email
+import hashlib
 import json
-
-def lambda_handler(event, context):
-    # TODO implement
-    return {
-        'statusCode': 200,
-        'body': json.dumps('Hello from Lambda!')
-    }
-"""
-
-import json
-import logging
-import os
+import re
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email import policy
 
 import boto3
-from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
-
-from strands import Agent, tool
-from strands.models import BedrockModel
-
-import recon_core as core
-from recon_core import ZERO, dec
-
-log = logging.getLogger()
-log.setLevel(logging.INFO)
 
 REGION = "ap-southeast-1"
-LEDGER_TABLE = os.environ.get("LEDGER_TABLE", "auditai-ledger")
-DOCS_TABLE = os.environ.get("DOCS_TABLE", "auditai-documents")
 
-# Proven working in this account - taken from the extraction agent, which is
-# already calling Bedrock successfully. Do not guess this string.
-MODEL_ID = os.environ.get(
-    "MODEL_ID", "global.anthropic.claude-sonnet-4-5-20250929-v1:0")
+s3 = boto3.client("s3", region_name=REGION)
+textract = boto3.client("textract", region_name=REGION)
+bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+dynamodb = boto3.resource("dynamodb", region_name=REGION)
+table = dynamodb.Table("auditai-documents")
 
-DATE_TOL_DAYS = int(os.environ.get("DATE_TOLERANCE_DAYS", "5"))
-MATERIALITY = Decimal(os.environ.get("MATERIALITY", "0.00"))
-ENABLE_INVESTIGATION = os.environ.get("ENABLE_INVESTIGATION", "true").lower() == "true"
-MAX_TOOL_CALLS = int(os.environ.get("MAX_TOOL_CALLS", "4"))
+BUCKET = "auditai-raw-docs-203475186003-ap-southeast-1-an"
 
-PRICE_IN = Decimal("3.00")      # USD per 1M input tokens
-PRICE_OUT = Decimal("15.00")    # USD per 1M output tokens
+# Sonnet 4.6. Confirm the exact string with:
+#   aws bedrock list-inference-profiles --region ap-southeast-1
+# The 'global.' prefix is already proven working in this account.
+MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 
-_ddb = boto3.resource("dynamodb", region_name=REGION)
-_ledger = _ddb.Table(LEDGER_TABLE)
-_docs = _ddb.Table(DOCS_TABLE)
+SCHEMA_VERSION = "1.1"
 
-REQUIRED = ("trial_balance", "pnl", "balance_sheet")
-LOCK_SK = "reconciliation_lock"
-OUTPUT_SK = "reconciliation"
+# Textract routing. Receipts and invoices have expense semantics; statements,
+# ledgers and journals are tables and need AnalyzeDocument instead.
+# AFTER
+ALLOWED_DOC_TYPES = {"receipt", "invoice", "purchase_invoice", "statement",
+                     "trial_balance", "ledger", "journal"}
+EXPENSE_TYPES = {"receipt", "invoice", "purchase_invoice"}
+TABULAR_TYPES = {"statement", "trial_balance", "ledger", "journal"}
+BASE_CURRENCY = "MYR"
+CONFIDENCE_THRESHOLD = 80.0
 
-
-class DecimalEncoder(json.JSONEncoder):
-    def default(self, o):
-        return str(o) if isinstance(o, Decimal) else super().default(o)
-
-
-# ------------------------------------------------------------------ reads --
-
-def _pk(run_id):
-    return f"run#{run_id}"
+MONEY = Decimal("0.01")     # every amount quantized to exactly 2 places
+ZERO = Decimal("0.00")
 
 
-def _get(run_id, sk):
-    """Read one artifact from the ledger table."""
-    return _ledger.get_item(Key={"PK": _pk(run_id), "SK": sk}).get("Item")
+# ===========================================================================
+# Money.  Decimal only, always 2dp, never float.
+# ===========================================================================
 
-
-def _get_statement(run_id):
-    """Find the bank statement in the EXTRACTION agent's table.
-
-    Different table, different key schema: PK=run_id, SK=doc_type_id, where
-    doc_type_id looks like 'statement#a02ed51f6dfe'.
-    """
+def to_amount(text) -> Decimal | None:
+    """'MYR 3,000.5' -> Decimal('3000.50'). None if not a readable number."""
+    if text is None:
+        return None
+    cleaned = re.sub(r"[^\d.\-]", "", str(text))
+    if cleaned in ("", "-", "."):
+        return None
     try:
-        resp = _docs.query(
-            KeyConditionExpression=Key("run_id").eq(run_id)
-            & Key("doc_type_id").begins_with("statement#"))
-        items = [i for i in resp.get("Items", [])
-                 if i.get("status") != "failed"]
-        return items[0] if items else None
-    except ClientError as exc:
-        log.warning("could not query %s for a statement: %s", DOCS_TABLE, exc)
+        return Decimal(cleaned).quantize(MONEY, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
         return None
 
 
-# ------------------------------------------------------- investigation tools
-# Loaded ONLY on the FAIL path. All read-only. None of them do arithmetic.
-
-_tool_budget = {"used": 0}
-
-
-def _budget_ok():
-    _tool_budget["used"] += 1
-    return _tool_budget["used"] <= MAX_TOOL_CALLS
+def money_str(value: Decimal, currency: str = BASE_CURRENCY) -> str:
+    """Display only. Never store this."""
+    return f"{currency} {value:,.2f}"
 
 
-@tool
-def get_chart_of_accounts(run_id: str) -> str:
-    """List every account in the trial balance with its code, name, type and
-    balances. Use this first to orient yourself before investigating a
-    specific account. All totals are already computed - never recompute them."""
-    if not _budget_ok():
-        return "Investigation budget exhausted. Write your conclusion now."
-    tb = _get(run_id, "trial_balance") or {}
-    return json.dumps(tb.get("accounts", []), cls=DecimalEncoder)
+def safe_filename(name: str) -> str:
+    """Strip path separators so a filename cannot walk the S3 prefix."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name.rsplit("/", 1)[-1])[:120]
 
 
-@tool
-def get_account_postings(run_id: str, account_code: str) -> str:
-    """Return the individual journal entries that were posted to one account
-    code, so you can see which transactions produced its balance. Use this
-    when a tie-out failed and you need to name the entries responsible."""
-    if not _budget_ok():
-        return "Investigation budget exhausted. Write your conclusion now."
-    resp = _ledger.query(
-        KeyConditionExpression=Key("PK").eq(_pk(run_id))
-        & Key("SK").begins_with("entry#"))
-    hits = [e for e in resp.get("Items", [])
-            if str(account_code) in (str(e.get("debit_account")),
-                                     str(e.get("credit_account")),
-                                     str(e.get("account_code")))]
-    return json.dumps(hits[:25], cls=DecimalEncoder)
+# ===========================================================================
+# Textract  -  routed by document type
+# ===========================================================================
+
+SUMMARY_FIELDS_WANTED = {
+    "VENDOR_NAME", "TOTAL", "SUBTOTAL", "TAX",
+    "INVOICE_RECEIPT_DATE", "INVOICE_RECEIPT_ID", "RECEIVER_NAME",
+}
 
 
-@tool
-def get_unmatched_bank_lines(run_id: str) -> str:
-    """Return bank statement lines that could not be matched to a cash ledger
-    entry. Use this when the bank reconciliation has an unexplained
-    difference and you need to describe what is sitting unmatched."""
-    if not _budget_ok():
-        return "Investigation budget exhausted. Write your conclusion now."
-    bank, cash = _load_bank_inputs(run_id)
-    if not bank or not cash:
-        return "No bank statement or cash ledger is available for this run."
-    _, _, un_bank = core.match_lines(cash.get("lines", []),
-                                     bank.get("lines", []), DATE_TOL_DAYS)
-    return json.dumps([core._clean(i, "unmatched") for i in un_bank],
-                      cls=DecimalEncoder)
+def read_expense(file_bytes: bytes) -> dict:
+    """AnalyzeExpense (~$10/1k). Receipts and invoices only."""
+    resp = textract.analyze_expense(Document={"Bytes": file_bytes})
+    docs = resp.get("ExpenseDocuments") or []
+    if not docs:
+        return {"summary": {}, "text": "", "min_confidence": 0.0}
+
+    doc = docs[0]
+    confidences: list[float] = []
+    summary: dict[str, str] = {}
+
+    for field in doc.get("SummaryFields", []):
+        ftype = (field.get("Type") or {}).get("Text", "")
+        detection = field.get("ValueDetection") or {}
+        value, conf = detection.get("Text"), detection.get("Confidence")
+        if ftype in SUMMARY_FIELDS_WANTED and value is not None:
+            summary[ftype] = value
+            if conf is not None:
+                confidences.append(float(conf))
+
+    rows: list[str] = []
+    for group in doc.get("LineItemGroups", []):
+        for item in group.get("LineItems", []):
+            parts = []
+            for field in item.get("LineItemExpenseFields", []):
+                ftype = (field.get("Type") or {}).get("Text", "")
+                detection = field.get("ValueDetection") or {}
+                value, conf = detection.get("Text"), detection.get("Confidence")
+                if value is not None:
+                    parts.append(f"{ftype}={value}")
+                    if conf is not None:
+                        confidences.append(float(conf))
+            if parts:
+                rows.append("  ".join(parts))
+
+    text = "\n".join([f"{k}: {v}" for k, v in summary.items()] + rows)
+    return {
+        "summary": summary,
+        "text": text,
+        "min_confidence": min(confidences) if confidences else 0.0,
+    }
 
 
-# ------------------------------------------------------------------ prompts
+def read_tables(file_bytes: bytes) -> dict:
+    """AnalyzeDocument with TABLES only (~$15/1k). Statements, ledgers,
+    journals, trial balances - anything whose meaning lives in a grid.
 
-_RULES = """
-Currency is MYR. Every figure you are given was computed and verified in
-Python before you were called.
-
-ABSOLUTE RULES:
-- Never invent, recompute, re-add or round a number. Quote each figure exactly
-  as given, to two decimal places.
-- If a check FAILED, say so plainly and name the amount. Do not soften it.
-- A reconciling item (an uncleared cheque, a deposit in transit) is NORMAL. It
-  is a disclosure, not an error.
-- An audit reports what happened. Never propose altering the books to make a
-  number agree.
-- Prose only. No markdown headings, no bullet lists, no preamble.
-"""
-
-NARRATE_PROMPT = """You write the reconciliation section of a financial audit report.
-
-You will receive a JSON object of completed checks. Write 3-4 short paragraphs
-covering: whether the statements tie out internally; whether book cash
-reconciles to the bank and what explains any difference; any check that was
-SKIPPED and why that matters; and a one-line conclusion.
-""" + _RULES
-
-INVESTIGATE_PROMPT = """You are the reconciliation auditor. One or more checks
-have FAILED.
-
-Use your tools to find out WHY. Look up the accounts, postings or unmatched
-lines behind the failure, then write 3-5 paragraphs explaining what broke,
-which records are responsible, and what a human reviewer should check first.
-
-Be efficient: call a tool only when it will change what you write. If a tool
-says the investigation budget is exhausted, stop and conclude from what you
-have.
-""" + _RULES
-
-
-def _model():
-    return BedrockModel(model_id=MODEL_ID, region_name=REGION,
-                        temperature=0.0, max_tokens=1200, streaming=False)
-
-
-def _log_cost(result, path):
-    """Structured cost line. Query with CloudWatch Logs Insights:
-       fields @timestamp, path, in_tokens, out_tokens, est_usd
-       | filter cost_log = 1 | sort @timestamp desc
+    Textract's table grid only covers cells inside detected TABLE blocks.
+    Page-level text (titles, company name, currency, dates) lives in plain
+    LINE blocks outside any table - both need to be captured, or the model
+    never sees the header at all.
     """
-    try:
-        usage = result.metrics.accumulated_usage
-        tin, tout = int(usage.get("inputTokens", 0)), int(usage.get("outputTokens", 0))
-        est = Decimal(tin) / 1_000_000 * PRICE_IN + Decimal(tout) / 1_000_000 * PRICE_OUT
-        log.info(json.dumps({"cost_log": 1, "path": path, "in_tokens": tin,
-                             "out_tokens": tout,
-                             "est_usd": str(est.quantize(Decimal("0.000001")))}))
-    except Exception:
-        log.warning("token metrics unavailable")
+    resp = textract.analyze_document(
+        Document={"Bytes": file_bytes}, FeatureTypes=["TABLES"]
+    )
+    blocks = {b["Id"]: b for b in resp["Blocks"]}
+    confidences: list[float] = []
+
+    header_lines = [
+        b["Text"] for b in resp["Blocks"]
+        if b["BlockType"] == "LINE" and b.get("Text")
+    ]
+
+    def cell_text(cell: dict) -> str:
+        words = []
+        for rel in cell.get("Relationships", []):
+            if rel["Type"] == "CHILD":
+                for cid in rel["Ids"]:
+                    child = blocks.get(cid, {})
+                    if child.get("BlockType") == "WORD":
+                        words.append(child["Text"])
+        return " ".join(words)
+
+    table_lines: list[str] = []
+    for block in resp["Blocks"]:
+        if block["BlockType"] != "TABLE":
+            continue
+        rows: dict[int, dict[int, str]] = {}
+        for rel in block.get("Relationships", []):
+            if rel["Type"] != "CHILD":
+                continue
+            for cid in rel["Ids"]:
+                cell = blocks.get(cid, {})
+                if cell.get("BlockType") != "CELL":
+                    continue
+                rows.setdefault(cell["RowIndex"], {})[cell["ColumnIndex"]] = cell_text(cell)
+                if cell.get("Confidence") is not None:
+                    confidences.append(float(cell["Confidence"]))
+        for r in sorted(rows):
+            table_lines.append(" | ".join(rows[r][c] for c in sorted(rows[r])))
+        table_lines.append("")
+
+    text = "\n".join(header_lines) + "\n\n" + "\n".join(table_lines)
+    return {
+        "summary": {},
+        "text": text,
+        "min_confidence": min(confidences) if confidences else 0.0,
+    }
 
 
-def write_narrative(payload):
-    """STEP 4 - the only place the model is used."""
-    _tool_budget["used"] = 0
-    failed = payload["status"] == "FAIL"
-    try:
-        if failed and ENABLE_INVESTIGATION:
-            agent = Agent(model=_model(), system_prompt=INVESTIGATE_PROMPT,
-                          tools=[get_chart_of_accounts, get_account_postings,
-                                 get_unmatched_bank_lines])
-            path = "investigate"
-        else:
-            agent = Agent(model=_model(), system_prompt=NARRATE_PROMPT, tools=[])
-            path = "narrate"
-        result = agent(json.dumps(payload, cls=DecimalEncoder))
-        _log_cost(result, path)
-        return str(result), path, None
-    except Exception as exc:
-        log.exception("Strands agent failed; degrading to template narrative")
-        return _fallback(payload), "fallback", str(exc)
+def read_document(file_bytes: bytes, doc_type: str) -> dict:
+    """Right API for the right document. Both return the same shape."""
+    if doc_type in EXPENSE_TYPES:
+        return read_expense(file_bytes)
+    return read_tables(file_bytes)
 
 
-def _fallback(payload):
-    rec = payload["reconciliation"]
-    head = ("All tie-out checks passed." if not payload["exceptions"]
-            else f"Tie-out FAILED: {', '.join(payload['exceptions'])}.")
-    if rec.get("status") == "SKIPPED":
-        tail = f"Bank reconciliation skipped: {rec.get('reason', 'inputs absent')}."
-    else:
-        tail = (f"Book cash of {rec['book_balance']} was reconciled to a bank "
-                f"balance of {rec['bank_balance']}, leaving an unexplained "
-                f"difference of {rec['unexplained_difference']}.")
-    return (f"{head} {tail} Narrative generation was unavailable; every figure "
-            f"above was computed and verified in code.")
+# ===========================================================================
+# Claude  -  mapping and judgment only. No categorisation, no arithmetic.
+# ===========================================================================
+
+EXTRACTION_SYSTEM = """You normalise OCR output from financial documents onto a fixed JSON schema.
+
+HARD RULES
+- Reply with a single JSON object. No markdown fences, no preamble, no commentary.
+- Every monetary value is a NUMBER with exactly two decimal places: 12.50, 5.00,
+  3000.00. Never 12.5, never "MYR 12.50", never 1250.
+- You NEVER add, subtract, multiply or reconcile any figure. If a line reads
+  "40 seats @ $75" with no total shown, its amount is null - do NOT compute
+  40 x 75. Python performs every calculation downstream.
+- Subtotal, Tax and Total are NOT line items. Put them in their own fields.
+  A line item is a good or service being charged for.
+- Convert the document date to YYYY-MM-DD. If the printed date is ambiguous,
+  set date to null and add "date" to unreadable_fields.
+- If a field is simply not on the document, set it to null and do NOT list it
+  in unreadable_fields. Many receipts have no "billed to", no separate subtotal
+  and no tax line. Absent is not the same as unreadable.
+- Only list a field in unreadable_fields if it IS printed but you cannot make
+  it out.
+- Do not classify, categorise or label the document in any way.
+
+SCHEMA
+{
+  "vendor": string,
+  "billed_to": string or null,
+  "date": "YYYY-MM-DD" or null,
+  "reference": string or null,
+  "currency": "ISO 4217 code, e.g. MYR",
+  "line_items": [
+    {"description": string, "amount": number or null}
+  ],
+  "subtotal": number or null,
+  "tax": number or null,
+  "total": number,
+  "unreadable_fields": [string]
+}"""
 
 
-# --------------------------------------------------------------- bank inputs
+# NOTE: this is deliberately a DIFFERENT schema from EXTRACTION_SYSTEM above.
+# A trial balance / ledger / journal has no vendor and no single total - it
+# has rows of accounts, each with a debit and a credit.
+TABULAR_EXTRACTION_SYSTEM = """You normalise OCR table output from an
+accounting document (trial balance, general ledger, journal, or financial
+statement) onto a fixed JSON schema.
 
-def _load_bank_inputs(run_id):
-    """Assemble the two independent cash records, if they exist yet.
+HARD RULES
+- Reply with a single JSON object. No markdown fences, no preamble.
+- Every monetary value is a NUMBER with exactly two decimal places.
+- You NEVER compute a total, balance, or net figure. If the document shows
+  a subtotal or total row, extract it as its own account entry with
+  is_total: true - do not calculate it yourself.
+- Preserve the account name and account code EXACTLY as printed.
+- Each row becomes one entry in "accounts". A row with only a debit has
+  credit: 0.00 (not null) and vice versa - do not omit missing side.
+- Do not classify, categorise, or reconcile. That is a downstream job.
+- If the reporting period is stated, extract start/end as YYYY-MM-DD. If
+  only a single year or "as at" date, set start to null and put the single
+  date in "end".
 
-    cash_ledger : from the ledger agent (NOT BUILT YET - see notes)
-    bank        : from the extraction agent's statement document
-    """
-    cash = _get(run_id, "cash_ledger")
-    bank = _get(run_id, "bank_statement")          # hand-seeded shape
-    if bank is None:
-        doc = _get_statement(run_id)               # real extraction output
-        if doc:
-            lines, closing, warns = core.statement_doc_to_lines(doc)
-            for w in warns:
-                log.warning("[%s] statement adapter: %s", run_id, w)
-            if closing is not None:
-                bank = {"closing_balance": closing, "lines": lines,
-                        "source": doc.get("doc_type_id"),
-                        "adapter_warnings": warns}
-    return bank, cash
-
-
-# ---------------------------------------------------------------- lock/gate
-
-def _claim_lock(run_id):
-    """Wins exactly once per run_id, so a duplicate stream trigger cannot pay
-    Bedrock twice. This is a spend control, not just a correctness control."""
-    try:
-        _ledger.put_item(
-            Item={"PK": _pk(run_id), "SK": LOCK_SK, "run_id": run_id,
-                  "claimed_at": datetime.now(timezone.utc).isoformat()},
-            ConditionExpression="attribute_not_exists(PK)")
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise
-
-
-def _release_lock(run_id):
-    _ledger.delete_item(Key={"PK": _pk(run_id), "SK": LOCK_SK})
+SCHEMA
+{
+  "document_type": "trial_balance" | "ledger" | "journal" | "statement",
+  "company": string or null,
+  "period": {"start": "YYYY-MM-DD" or null, "end": "YYYY-MM-DD" or null},
+  "currency": "ISO 4217 code",
+  "accounts": [
+    {
+      "account_code": string or null,
+      "account_name": string,
+      "debit": number,
+      "credit": number,
+      "is_total": boolean
+    }
+  ],
+  "unreadable_fields": [string]
+}"""
 
 
-def run_reconciliation(run_id, force=False):
-    # ---- STEP 1: read the artifacts (no model) -------------------------
-    artifacts = {sk: _get(run_id, sk) for sk in REQUIRED}
-    missing = [sk for sk, v in artifacts.items() if v is None]
-    if missing:
-        log.info("gate: %s waiting on %s", run_id, missing)
-        return {"run_id": run_id, "skipped": True, "waiting_on": missing}
+def normalize_with_claude(ocr_text: str, doc_type: str) -> dict:
+    system_prompt = (
+        TABULAR_EXTRACTION_SYSTEM if doc_type in TABULAR_TYPES
+        else EXTRACTION_SYSTEM
+    )
+    resp = bedrock.converse(
+        modelId=MODEL_ID,
+        system=[{"text": system_prompt}],
+        messages=[{"role": "user", "content": [{"text": ocr_text}]}],
+        inferenceConfig={"maxTokens": 2000, "temperature": 0},
+    )
+    raw = resp["output"]["message"]["content"][0]["text"].strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
 
-    if not force and not _claim_lock(run_id):
-        log.info("gate: %s already claimed, duplicate trigger ignored", run_id)
-        return {"run_id": run_id, "skipped": True, "reason": "already_claimed"}
+    # THE CRITICAL LINE. Without parse_float=Decimal, 12.50 becomes a float
+    # here and every later Decimal() call is preserving damage already done.
+    return json.loads(raw, parse_float=Decimal)
 
-    try:
-        tb, pnl, bs = (artifacts["trial_balance"], artifacts["pnl"],
-                       artifacts["balance_sheet"])
 
-        # ---- STEP 2: compute every check in Python (no model) ----------
-        tie_outs = core.run_tie_outs(tb, pnl, bs)
+# ===========================================================================
+# Build the contract-shaped document - invoice/receipt shape
+# ===========================================================================
 
-        bank, cash = _load_bank_inputs(run_id)
-        if bank and cash:
-            reconciliation = core.run_bank_reconciliation(
-                bs, bank, cash, DATE_TOL_DAYS, MATERIALITY)
-            if bank.get("adapter_warnings"):
-                reconciliation["adapter_warnings"] = bank["adapter_warnings"]
-        else:
-            absent = [n for n, v in (("bank statement", bank),
-                                     ("cash_ledger", cash)) if not v]
-            reconciliation = {
-                "name": "bank_vs_book_cash", "status": "SKIPPED",
-                "reason": f"missing: {', '.join(absent)}",
-                "explanation": (
-                    "Reconciliation compares two independent records of the "
-                    "same cash. Without both, only the tie-out can run."),
-            }
+def build_document(run_id, doc_type, doc_id, content_hash, s3_key,
+                   claude: dict, ocr: dict) -> dict:
+    currency = (claude.get("currency") or BASE_CURRENCY).upper()
+    review_reasons: list[str] = []
 
-        # ---- STEP 3: decide PASS or FAIL (no model) --------------------
-        payload = core.build_result(run_id, tie_outs, reconciliation)
-        payload.update({
-            "PK": _pk(run_id), "SK": OUTPUT_SK,
-            "schema_version": "1.0",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "model_id": MODEL_ID,
-            "materiality": MATERIALITY,
+    line_items = []
+    for i, raw in enumerate(claude.get("line_items") or [], start=1):
+        amount = to_amount(raw.get("amount"))
+        if amount is None:
+            amount = ZERO
+            review_reasons.append(
+                f"line {i} ({raw.get('description')!r}) has no readable amount"
+            )
+        line_items.append({
+            "line_no": i,
+            "description": raw.get("description", ""),
+            "amount": amount,
         })
 
-        # ---- STEP 4: the model writes the prose ------------------------
-        narrative, path, err = write_narrative(payload)
-        payload["narrative"] = narrative
-        payload["narrative_path"] = path
-        if err:
-            payload["narrative_degraded"] = err
+    stated_total = to_amount(claude.get("total"))
+    stated_subtotal = to_amount(claude.get("subtotal"))
+    tax = to_amount(claude.get("tax")) or ZERO
 
-        # ---- STEP 5: persist (no model) --------------------------------
-        _ledger.put_item(Item=payload)
-        log.info("stage8 %s -> %s (%d exceptions, path=%s)", run_id,
-                 payload["status"], len(payload["exceptions"]), path)
-        return json.loads(json.dumps(payload, cls=DecimalEncoder))
-    except Exception:
-        _release_lock(run_id)      # allow a retry after a genuine failure
-        raise
+    computed_subtotal = sum((li["amount"] for li in line_items), ZERO)
+    subtotal = stated_subtotal if stated_subtotal is not None else computed_subtotal
+    total = stated_total if stated_total is not None else subtotal + tax
+
+    if stated_subtotal is not None and computed_subtotal != stated_subtotal:
+        review_reasons.append(
+            f"line items sum to {computed_subtotal} but subtotal reads {stated_subtotal}"
+        )
+    if subtotal + tax != total:
+        review_reasons.append(f"subtotal {subtotal} + tax {tax} != total {total}")
+
+    tex_total = to_amount(ocr["summary"].get("TOTAL"))
+    if tex_total is not None and stated_total is not None and tex_total != stated_total:
+        review_reasons.append(
+            f"Textract read the total as {tex_total}, Claude read {stated_total}"
+        )
+
+    if currency != BASE_CURRENCY:
+        review_reasons.append(
+            f"currency {currency} differs from base {BASE_CURRENCY}; FX conversion required"
+        )
+
+    min_conf = ocr["min_confidence"]
+    if min_conf and min_conf < CONFIDENCE_THRESHOLD:
+        review_reasons.append(f"lowest Textract field confidence {min_conf:.1f}%")
+
+    REQUIRED_FIELDS = {"vendor", "date", "total", "currency"}
+    unreadable = claude.get("unreadable_fields") or []
+    blocking = [f for f in unreadable if f in REQUIRED_FIELDS]
+    if blocking:
+        review_reasons.append(f"unreadable required field(s): {', '.join(blocking)}")
+
+    return {
+        "kind": "expense",   # lets the handler know which response shape to build
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "doc_type_id": f"{doc_type}#{doc_id}",
+        "document_id": f"{doc_type}#{doc_id}",
+        "content_hash": f"sha256:{content_hash}",
+        "doc_type": doc_type,
+        "direction": "outflow" if doc_type in {"receipt", "purchase_invoice"} else "inflow",
+        "status": "pending_review" if review_reasons else "normalized",
+        "currency": currency,
+        "document_date": claude.get("date"),
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "vendor": {"name": claude.get("vendor") or ocr["summary"].get("VENDOR_NAME", "")},
+        "billed_to": claude.get("billed_to"),
+        "reference": claude.get("reference"),
+        "line_items": line_items,
+        "subtotal": subtotal,
+        "tax_amount": tax,
+        "total_amount": total,
+        "extraction_confidence": {
+            "min_field": Decimal(str(round(min_conf, 2))),
+            "unreadable_fields": unreadable,
+        },
+        "review_reasons": review_reasons,
+        "raw_textract_ref": s3_key,
+    }
 
 
-# ------------------------------------------------------------------ handler
+# ===========================================================================
+# Build the contract-shaped document - accounts (tabular) shape
+# ===========================================================================
 
-def _run_ids_from_stream(event):
-    ids, watched = [], {"pnl", "balance_sheet"}
-    for record in event.get("Records", []):
-        if record.get("eventName") not in ("INSERT", "MODIFY"):
-            continue
-        keys = record.get("dynamodb", {}).get("Keys", {})
-        pk = keys.get("PK", {}).get("S", "")
-        sk = keys.get("SK", {}).get("S")
-        run_id = pk[4:] if pk.startswith("run#") else None
-        if run_id and sk in watched and run_id not in ids:
-            ids.append(run_id)
-    return ids
+def build_tabular_document(run_id, doc_type, doc_id, content_hash, s3_key,
+                            claude: dict, ocr: dict) -> dict:
+    currency = (claude.get("currency") or BASE_CURRENCY).upper()
+    review_reasons: list[str] = []
+
+    accounts = []
+    total_debit = ZERO
+    total_credit = ZERO
+    for i, raw in enumerate(claude.get("accounts") or [], start=1):
+        debit = to_amount(raw.get("debit")) or ZERO
+        credit = to_amount(raw.get("credit")) or ZERO
+        is_total = bool(raw.get("is_total"))
+        if not is_total:
+            total_debit += debit
+            total_credit += credit
+        accounts.append({
+            "line_no": i,
+            "account_code": raw.get("account_code"),
+            "account_name": raw.get("account_name", ""),
+            "debit": debit,
+            "credit": credit,
+            "is_total": is_total,
+        })
+
+    # Balance sheets are checked against Assets = Liabilities + Equity by the
+    # Balance Sheet Agent downstream, not here - the debit/credit identity
+    # only holds for trial balances and ledgers.
+    if doc_type in {"trial_balance", "ledger"} and total_debit != total_credit:
+        review_reasons.append(
+            f"debits ({total_debit}) do not equal credits ({total_credit})"
+        )
+
+    min_conf = ocr["min_confidence"]
+    if min_conf and min_conf < CONFIDENCE_THRESHOLD:
+        review_reasons.append(f"lowest Textract field confidence {min_conf:.1f}%")
+
+    unreadable = claude.get("unreadable_fields") or []
+
+    return {
+        "kind": "tabular",   # lets the handler know which response shape to build
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "doc_type_id": f"{doc_type}#{doc_id}",
+        "document_id": f"{doc_type}#{doc_id}",
+        "content_hash": f"sha256:{content_hash}",
+        "doc_type": doc_type,
+        "status": "pending_review" if review_reasons else "normalized",
+        "currency": currency,
+        "period": claude.get("period") or {"start": None, "end": None},
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "company": claude.get("company"),
+        "accounts": accounts,
+        "total_debit": total_debit,
+        "total_credit": total_credit,
+        "extraction_confidence": {
+            "min_field": Decimal(str(round(min_conf, 2))),
+            "unreadable_fields": unreadable,
+        },
+        "review_reasons": review_reasons,
+        "raw_textract_ref": s3_key,
+    }
+
+
+def to_dynamo(obj):
+    """Last line of defence. A float reaching here means a bug upstream -
+    fail loudly rather than silently storing an imprecise amount."""
+    if isinstance(obj, list):
+        return [to_dynamo(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: to_dynamo(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, float):
+        raise TypeError(
+            f"float {obj!r} reached DynamoDB. Money must be Decimal - "
+            "check that json.loads used parse_float=Decimal."
+        )
+    return obj
+
+
+# ===========================================================================
+# Handler
+# ===========================================================================
+
+def parse_multipart(body_bytes, content_type):
+    msg = email.message_from_bytes(
+        b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body_bytes,
+        policy=policy.default,
+    )
+    fields = {}
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="Content-Disposition")
+        filename = part.get_param("filename", header="Content-Disposition")
+        if filename:
+            fields[name] = {"filename": filename, "content": part.get_payload(decode=True)}
+        else:
+            fields[name] = part.get_payload(decode=True).decode().strip()
+    return fields
 
 
 def lambda_handler(event, context):
-    """Accepts a DynamoDB Stream batch, or {"run_id": "...", "force": true}."""
-    if "Records" in event:
-        run_ids = _run_ids_from_stream(event)
-        log.info("stream batch -> candidate runs: %s", run_ids)
-        return {"results": [run_reconciliation(r) for r in run_ids]}
+    content_type = event.get("headers", {}).get("content-type", "")
+    if "multipart/form-data" not in content_type:
+        return response(400, {"error": "Expected multipart/form-data"})
 
-    run_id = event.get("run_id") or event.get("runId")
-    if not run_id:
-        raise ValueError("event needs run_id, or a DynamoDB Records batch")
-    return run_reconciliation(run_id, force=bool(event.get("force")))
+    raw_body = event["body"]
+    body_bytes = base64.b64decode(raw_body) if event.get("isBase64Encoded") else raw_body.encode()
+
+    try:
+        fields = parse_multipart(body_bytes, content_type)
+        run_id = fields["run_id"]
+        doc_type = fields["doc_type"].lower()
+        file_part = fields["file"]
+        filename = safe_filename(file_part["filename"])
+        file_bytes = file_part["content"]
+    except KeyError as e:
+        return response(400, {"error": f"Missing field: {e}"})
+
+    if doc_type not in ALLOWED_DOC_TYPES:
+        return response(400, {
+            "error": f'Invalid doc_type "{doc_type}". Must be one of: '
+                     f'{", ".join(sorted(ALLOWED_DOC_TYPES))}'
+        })
+
+    content_hash = hashlib.sha256(file_bytes).hexdigest()
+    doc_id = content_hash[:12]
+    s3_key = f"{doc_type}/{run_id}/{doc_id}_{filename}"
+
+    existing = table.get_item(
+        Key={"run_id": run_id, "doc_type_id": f"{doc_type}#{doc_id}"}
+    ).get("Item")
+    upload_count = int(existing.get("upload_count", 1)) + 1 if existing else 1
+
+    s3.put_object(Bucket=BUCKET, Key=s3_key, Body=file_bytes)
+
+    # Extraction runs on the bytes already in memory - nothing is written to
+    # S3 until the quarter is known, so the object is only ever PUT once.
+    # raw_textract_ref is filled in below once the final key exists.
+    try:
+        ocr = read_document(file_bytes, doc_type)
+        claude = normalize_with_claude(ocr["text"], doc_type)
+        if doc_type in TABULAR_TYPES:
+            document = build_tabular_document(
+                run_id, doc_type, doc_id, content_hash, s3_key, claude, ocr
+            )
+        else:
+            document = build_document(
+                run_id, doc_type, doc_id, content_hash, s3_key, claude, ocr
+            )
+    except Exception as e:
+        table.put_item(Item={
+            "run_id": run_id,
+            "doc_type_id": f"{doc_type}#{doc_id}",
+            "schema_version": SCHEMA_VERSION,
+            "status": "failed",
+            "error": str(e),
+            "content_hash": f"sha256:{content_hash}",
+            "raw_textract_ref": s3_key,
+            "ingested_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return response(500, {"error": "Extraction failed", "detail": str(e), "doc_id": doc_id})
+
+    document["upload_count"] = upload_count
+    table.put_item(Item=to_dynamo(document))
+
+    # Response shape differs by document kind - an accounts-based document
+    # has no single total_amount, an expense-based one has no accounts[].
+
+    if document["kind"] == "tabular":
+        out = {
+            "doc_id": doc_id,
+            "run_id": run_id,
+            "status": document["status"],
+            "duplicate_upload": upload_count > 1,
+            "review_reasons": document["review_reasons"],
+            "total_debit": str(document["total_debit"]),
+            "total_credit": str(document["total_credit"]),
+            "currency": document["currency"],
+            "account_count": len(document["accounts"]),
+            "s3_key": s3_key,
+        }
+    else:
+        out = {
+            "doc_id": doc_id,
+            "run_id": run_id,
+            "status": document["status"],
+            "duplicate_upload": upload_count > 1,
+            "review_reasons": document["review_reasons"],
+            "total_amount": str(document["total_amount"]),
+            "currency": document["currency"],
+            "display_total": money_str(document["total_amount"], document["currency"]),
+            "s3_key": s3_key,
+        }
+
+    return response(200, out)
+
+
+def response(status_code, body_dict):
+    return {
+        "statusCode": status_code,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(body_dict, default=str),   # default=str handles Decimal
+    }
