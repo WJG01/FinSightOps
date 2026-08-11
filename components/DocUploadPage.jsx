@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 const DOCUMENT_TYPES = [
   { value: "invoice", label: "Invoice" },
@@ -9,80 +9,73 @@ const DOCUMENT_TYPES = [
   { value: "receipt", label: "Receipt" },
 ];
 
-// Mock data — grouped Financial Year -> Quarter -> files.
-// Swap this for a real fetch when wiring up the backend.
-const MOCK_FILES = {
-  2026: {
-    Q1: [
-      {
-        name: "invoice_techsupplies_0047.pdf",
-        type: "Invoice",
-        date: "2026-01-14",
-      },
-      {
-        name: "receipt_aws_cloud_0041.pdf",
-        type: "Receipt",
-        date: "2026-02-02",
-      },
-      {
-        name: "bank_statement_jan2026.pdf",
-        type: "Bank Statement",
-        date: "2026-02-05",
-      },
-    ],
-    Q2: [
-      {
-        name: "balance_sheet_q2_2026.pdf",
-        type: "Balance Sheet",
-        date: "2026-04-18",
-      },
-      {
-        name: "invoice_office_depot_0031.pdf",
-        type: "Invoice",
-        date: "2026-05-09",
-      },
-    ],
-    Q3: [],
-    Q4: [],
-  },
-  2025: {
-    Q1: [],
-    Q2: [],
-    Q3: [],
-    Q4: [
-      {
-        name: "receipt_delta_airlines_0044.pdf",
-        type: "Receipt",
-        date: "2025-11-22",
-      },
-      {
-        name: "bank_statement_dec2025.pdf",
-        type: "Bank Statement",
-        date: "2025-12-30",
-      },
-    ],
-  },
-};
-
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"];
 
+// Your upload Lambda (multipart/form-data POST)
+const UPLOAD_LAMBDA_URL =
+  "https://k74xcs6jalipde6byvaumfelba0zzgxd.lambda-url.ap-southeast-1.on.aws/";
+
+// Your new list/download Lambda (GET, ?action=list | ?action=download&fileId=...)
+// Replace with the Function URL you get after deploying list_and_download_documents_lambda.py
+const DOCS_LAMBDA_URL =
+  "https://5f5nhc7vor7cazrn5c5eef24gq0aopjr.lambda-url.ap-southeast-1.on.aws/";
+
 function totalForYear(yearData) {
-  return QUARTERS.reduce((sum, q) => sum + (yearData[q]?.length || 0), 0);
+  return QUARTERS.reduce((sum, q) => sum + (yearData?.[q]?.length || 0), 0);
 }
 
 export default function DocUploadPage() {
+  // --- Upload form state ---
   const [documentDate, setDocumentDate] = useState("");
   const [documentType, setDocumentType] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
 
-  const years = Object.keys(MOCK_FILES).sort((a, b) => b - a);
-  const [openYear, setOpenYear] = useState(years[0]);
-  const [openQuarter, setOpenQuarter] = useState(`${years[0]}-Q1`);
+  // --- Uploaded documents list state ---
+  const [documentsByYear, setDocumentsByYear] = useState({});
+  const [isLoadingDocs, setIsLoadingDocs] = useState(true);
+  const [docsError, setDocsError] = useState("");
+  const [downloadingFileId, setDownloadingFileId] = useState(null);
+
+  const years = Object.keys(documentsByYear).sort((a, b) => b - a);
+  const [openYear, setOpenYear] = useState(null);
+  const [openQuarter, setOpenQuarter] = useState(null);
 
   const totalDocs = years.reduce(
-    (sum, y) => sum + totalForYear(MOCK_FILES[y]),
+    (sum, y) => sum + totalForYear(documentsByYear[y]),
     0,
   );
+
+  // Fetch the document list from the new Lambda
+  const fetchDocuments = useCallback(async () => {
+    setIsLoadingDocs(true);
+    setDocsError("");
+    try {
+      const res = await fetch(`${DOCS_LAMBDA_URL}?action=list`);
+      if (!res.ok) {
+        throw new Error(`Failed to load documents (${res.status})`);
+      }
+      const data = await res.json();
+      const yearsData = data.years || {};
+      setDocumentsByYear(yearsData);
+
+      const sortedYears = Object.keys(yearsData).sort((a, b) => b - a);
+      if (sortedYears.length > 0) {
+        setOpenYear((prev) => prev ?? sortedYears[0]);
+        setOpenQuarter((prev) => prev ?? `${sortedYears[0]}-Q1`);
+      }
+    } catch (err) {
+      console.error("Failed to fetch documents", err);
+      setDocsError(err.message || "Could not load uploaded documents.");
+    } finally {
+      setIsLoadingDocs(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDocuments();
+  }, [fetchDocuments]);
 
   const toggleYear = (year) => {
     setOpenYear((prev) => (prev === year ? null : year));
@@ -94,15 +87,77 @@ export default function DocUploadPage() {
 
   const handleFileChange = (e) => {
     setSelectedFile(e.target.files?.[0] || null);
+    setUploadError("");
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log("Upload document", {
-      documentDate,
-      documentType,
-      selectedFile,
-    });
+
+    if (!selectedFile) {
+      setUploadError("Please select a file to upload.");
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadError("");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+      formData.append("fileName", selectedFile.name);
+      formData.append(
+        "contentType",
+        selectedFile.type || "application/octet-stream",
+      );
+      formData.append("documentType", documentType);
+      formData.append("documentDate", documentDate);
+
+      const res = await fetch(UPLOAD_LAMBDA_URL, {
+        method: "POST",
+        body: formData,
+        // Don't set Content-Type manually — the browser sets the multipart
+        // boundary automatically when body is a FormData instance.
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(
+          `Upload failed (${res.status}): ${text || res.statusText}`,
+        );
+      }
+
+      setSelectedFile(null);
+      setDocumentDate("");
+      setDocumentType("");
+
+      // Refresh the list so the newly uploaded file shows up immediately
+      await fetchDocuments();
+    } catch (err) {
+      console.error("Upload error", err);
+      setUploadError(err.message || "Something went wrong during upload.");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDownload = async (fileId) => {
+    setDownloadingFileId(fileId);
+    try {
+      const res = await fetch(
+        `${DOCS_LAMBDA_URL}?action=download&fileId=${encodeURIComponent(fileId)}`,
+      );
+      if (!res.ok) {
+        throw new Error(`Could not get download link (${res.status})`);
+      }
+      const data = await res.json();
+      // Open the presigned S3 URL directly — the browser handles the download.
+      window.open(data.downloadUrl, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      console.error("Download error", err);
+      alert(err.message || "Could not download this file.");
+    } finally {
+      setDownloadingFileId(null);
+    }
   };
 
   return (
@@ -130,6 +185,7 @@ export default function DocUploadPage() {
           gap: "1.5rem",
         }}
       >
+        {/* --- Upload form --- */}
         <form onSubmit={handleSubmit} className="module-card">
           <div className="module-card-header">
             <div className="module-card-title">Document Details</div>
@@ -203,6 +259,12 @@ export default function DocUploadPage() {
               style={{ display: "none" }}
             />
 
+            {uploadError && (
+              <p style={{ color: "red", marginTop: "0.75rem" }}>
+                {uploadError}
+              </p>
+            )}
+
             <div
               style={{
                 display: "flex",
@@ -214,18 +276,27 @@ export default function DocUploadPage() {
                 type="submit"
                 className="btn-primary"
                 style={{ border: "none", cursor: "pointer" }}
+                disabled={isUploading}
               >
-                Upload Document
+                {isUploading ? "Uploading…" : "Upload Document"}
               </button>
             </div>
           </div>
         </form>
 
+        {/* --- Uploaded documents list --- */}
         <div className="module-card">
           <div className="module-card-header">
             <div className="module-card-title">Uploaded Documents</div>
           </div>
           <div className="module-card-body">
+            {isLoadingDocs && <p>Loading documents…</p>}
+            {docsError && <p style={{ color: "red" }}>{docsError}</p>}
+
+            {!isLoadingDocs && !docsError && years.length === 0 && (
+              <p className="finding-meta">No documents uploaded yet.</p>
+            )}
+
             <div
               style={{
                 display: "flex",
@@ -234,7 +305,7 @@ export default function DocUploadPage() {
               }}
             >
               {years.map((year) => {
-                const yearData = MOCK_FILES[year];
+                const yearData = documentsByYear[year];
                 const yearOpen = openYear === year;
                 const yearCount = totalForYear(yearData);
 
@@ -351,7 +422,7 @@ export default function DocUploadPage() {
                                 >
                                   {files.map((file) => (
                                     <div
-                                      key={file.name}
+                                      key={file.fileId}
                                       style={{
                                         display: "flex",
                                         alignItems: "center",
@@ -378,30 +449,39 @@ export default function DocUploadPage() {
                                               color: "var(--slate-200)",
                                             }}
                                           >
-                                            {file.name}
+                                            {file.fileName}
                                           </div>
                                           <div className="finding-meta">
-                                            {file.type} · {file.date}
+                                            {file.documentType} ·{" "}
+                                            {file.documentDate}
                                           </div>
                                         </div>
                                       </div>
 
                                       {/* Download button */}
-                                      <a
-                                        href="#"
-                                        download={file.name}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleDownload(file.fileId)
+                                        }
+                                        disabled={
+                                          downloadingFileId === file.fileId
+                                        }
                                         className="mono"
                                         style={{
                                           fontSize: "0.7rem",
                                           color: "var(--slate-300)",
+                                          background: "transparent",
                                           border: "1px solid var(--slate-700)",
                                           borderRadius: "4px",
                                           padding: "0.25rem 0.6rem",
-                                          textDecoration: "none",
+                                          cursor: "pointer",
                                         }}
                                       >
-                                        ⬇ Download
-                                      </a>
+                                        {downloadingFileId === file.fileId
+                                          ? "Preparing…"
+                                          : "⬇ Download"}
+                                      </button>
                                     </div>
                                   ))}
                                 </div>
