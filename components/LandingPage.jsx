@@ -41,14 +41,14 @@ export default function LandingPage({ showPage }) {
             spots misclassified entries.
           </p>
         </div>
-        <div className="feature-card" onClick={() => showPage("receipts")}>
+        {/* <div className="feature-card" onClick={() => showPage("receipts")}>
           <div className="feature-icon">🧾</div>
           <h3>Receipt Authenticity</h3>
           <p>
             Detects forgeries, visual tampering, and duplicate submissions via
             metadata and AI analysis.
           </p>
-        </div>
+        </div> */}
         <div className="feature-card" onClick={() => showPage("recon")}>
           <div className="feature-icon">🔗</div>
           <h3>Reconciliation</h3>

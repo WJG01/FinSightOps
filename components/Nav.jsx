@@ -5,7 +5,7 @@ const NAV_ITEMS = [
   { id: "upload", label: "Upload Doc" },
   { id: "pl", label: "P&L Analysis" },
   { id: "balance", label: "Balance Sheet" },
-  { id: "receipts", label: "Receipts" },
+  // { id: "receipts", label: "Receipts" },
   { id: "recon", label: "Reconciliation" },
   { id: "settings", label: "Settings" },
 ];
