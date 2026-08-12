@@ -7,7 +7,7 @@ const NAV_ITEMS = [
   { id: "balance", label: "Balance Sheet" },
   // { id: "receipts", label: "Receipts" },
   { id: "recon", label: "Reconciliation" },
-  { id: "settings", label: "Settings" },
+  // { id: "settings", label: "Settings" },
 ];
 
 export default function Nav({ page, showPage }) {
