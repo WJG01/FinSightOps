@@ -7,28 +7,39 @@ export default function LandingPage({ showPage }) {
       <h1>
         Every figure.
         <br />
-        <em>Verified.</em> Every anomaly.
+        <em>Verified.</em> Every insight.
         <br />
-        Flagged.
+        Captured.
       </h1>
       <p className="hero-sub">
-        AuditAI runs end-to-end forensic analysis across your P&amp;L
+        FinSightOps runs end-to-end financial audit analysis across your P&amp;L
         statements, balance sheets, and receipts — then reconciles everything
         into a single unified finding.
       </p>
       <div className="hero-actions">
-        <button className="btn-primary" onClick={() => showPage("summary")}>
-          Open Summary
+        <button className="btn-primary" onClick={() => showPage("upload")}>
+          Begin by Upload
         </button>
-        <button className="btn-ghost" onClick={() => showPage("recon")}>
-          View Reconciliation
+        <button className="btn-ghost" onClick={() => showPage("summary")}>
+          View Summary
         </button>
       </div>
       <div className="feature-grid">
         <div className="feature-card" onClick={() => showPage("upload")}>
           <div className="feature-icon">📤</div>
           <h3>Upload Doc</h3>
-          <p>Upload your raw documents here.</p>
+          <p>
+            Ingests raw receipts and statements, then routes them into the audit
+            pipeline for processing.
+          </p>
+        </div>
+        <div className="feature-card" onClick={() => showPage("upload")}>
+          <div className="feature-icon">🔄</div>
+          <h3>Run Progress</h3>
+          <p>
+            Tracks each agent stage in real time, from ingestion through
+            reconciliation, with live status.
+          </p>
         </div>
         <div className="feature-card" onClick={() => showPage("pl")}>
           <div className="feature-icon">📊</div>
@@ -57,16 +68,11 @@ export default function LandingPage({ showPage }) {
         <div className="feature-card" onClick={() => showPage("recon")}>
           <div className="feature-icon">📋</div>
           <h3>Summary</h3>
-          <p>Final Consolidated Summary Finding</p>
-        </div>
-        {/* <div className="feature-card" onClick={() => showPage("receipts")}>
-          <div className="feature-icon">🧾</div>
-          <h3>Receipt Authenticity</h3>
           <p>
-            Detects forgeries, visual tampering, and duplicate submissions via
-            metadata and AI analysis.
+            Rolls up every stage's findings into one consolidated report with
+            final audit conclusions.
           </p>
-        </div> */}
+        </div>
       </div>
     </div>
   );

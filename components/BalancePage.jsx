@@ -1,8 +1,20 @@
 "use client";
 
+import { useState } from "react";
+import PeriodSelector, { FINANCIAL_YEARS } from "./PeriodSelector";
+
 export default function BalancePage() {
+  const [financialYear, setFinancialYear] = useState(FINANCIAL_YEARS[0]);
+  const [quarter, setQuarter] = useState("all");
   return (
     <div>
+      <PeriodSelector
+        financialYear={financialYear}
+        quarter={quarter}
+        onFinancialYearChange={setFinancialYear}
+        onQuarterChange={setQuarter}
+        onRun={() => console.log("Run clicked", { financialYear, quarter })}
+      />
       <div className="page-header">
         <div>
           <h2>Balance Sheet</h2>
@@ -177,9 +189,7 @@ export default function BalancePage() {
             <div style={{ height: "1rem" }}></div>
             <div className="module-card">
               <div className="module-card-header">
-                <div className="module-card-title">
-                  Non-Current Liabilities
-                </div>
+                <div className="module-card-title">Non-Current Liabilities</div>
                 <span className="badge badge-green">$600,000</span>
               </div>
               <div className="module-card-body" style={{ padding: 0 }}>
@@ -206,7 +216,9 @@ export default function BalancePage() {
             <div style={{ height: "1rem" }}></div>
             <div className="module-card">
               <div className="module-card-header">
-                <div className="module-card-title">Shareholders&apos; Equity</div>
+                <div className="module-card-title">
+                  Shareholders&apos; Equity
+                </div>
                 <span className="badge badge-green">$1,744,840</span>
               </div>
               <div className="module-card-body" style={{ padding: 0 }}>
@@ -252,14 +264,13 @@ export default function BalancePage() {
                   <strong>
                     Accounts Receivable $24,500 may be misclassified.
                   </strong>{" "}
-                  Aging analysis indicates this invoice is 380 days
-                  outstanding. Under GAAP, receivables beyond 12 months should
-                  be reclassified to non-current assets. Current total
-                  overstated by $24,500.
+                  Aging analysis indicates this invoice is 380 days outstanding.
+                  Under GAAP, receivables beyond 12 months should be
+                  reclassified to non-current assets. Current total overstated
+                  by $24,500.
                 </div>
                 <div className="finding-meta">
-                  CLASSIFICATION WARNING · GAAP ASC 310 · VERIFY WITH
-                  CONTROLLER
+                  CLASSIFICATION WARNING · GAAP ASC 310 · VERIFY WITH CONTROLLER
                 </div>
               </div>
             </div>

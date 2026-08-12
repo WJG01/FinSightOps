@@ -1,18 +1,30 @@
 "use client";
 
-export default function DashboardPage({ showPage }) {
+import { useState } from "react";
+import PeriodSelector, { FINANCIAL_YEARS } from "./PeriodSelector";
+
+export default function SummaryPage({ showPage }) {
+  const [financialYear, setFinancialYear] = useState(FINANCIAL_YEARS[0]);
+  const [quarter, setQuarter] = useState("all");
   return (
     <div>
+      <PeriodSelector
+        financialYear={financialYear}
+        quarter={quarter}
+        onFinancialYearChange={setFinancialYear}
+        onQuarterChange={setQuarter}
+        onRun={() => console.log("Run clicked", { financialYear, quarter })}
+      />
       <div className="page-header">
         <div>
-          <h2>Audit Dashboard</h2>
+          <h2>Summary Dashboard</h2>
           <div className="sub">Q3 2024 · FY Review · Last run 14 min ago</div>
         </div>
         <div className="header-actions">
           <span className="badge badge-amber">3 Warnings</span>
           <span className="badge badge-red">1 Critical</span>
           <button className="btn-primary" onClick={() => showPage("recon")}>
-            Run Full Audit
+            Generate Summary Report
           </button>
         </div>
       </div>
@@ -77,9 +89,7 @@ export default function DashboardPage({ showPage }) {
           {/* Recent Findings */}
           <div className="module-card">
             <div className="module-card-header">
-              <div className="module-card-title">
-                🔍 Recent Audit Findings
-              </div>
+              <div className="module-card-title">🔍 Recent Audit Findings</div>
               <span className="badge badge-amber">Live</span>
             </div>
             <div className="module-card-body">
@@ -131,8 +141,8 @@ export default function DashboardPage({ showPage }) {
                   <div className="finding-text">
                     <strong>3 receipts not tied to P&amp;L entries</strong>
                     <br />
-                    Total unreconciled amount: $8,230. No matching expense
-                    line found.
+                    Total unreconciled amount: $8,230. No matching expense line
+                    found.
                   </div>
                   <div className="finding-meta">
                     RECONCILIATION · Warning · 14 min ago
@@ -157,7 +167,9 @@ export default function DashboardPage({ showPage }) {
           </div>
 
           {/* Right panel */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}
+          >
             {/* Audit Score */}
             <div className="module-card">
               <div className="module-card-header">
@@ -175,28 +187,40 @@ export default function DashboardPage({ showPage }) {
                     <div className="bar-row">
                       <div className="bar-label">P&amp;L</div>
                       <div className="bar-track">
-                        <div className="bar-fill amber" style={{ width: "72%" }}></div>
+                        <div
+                          className="bar-fill amber"
+                          style={{ width: "72%" }}
+                        ></div>
                       </div>
                       <div className="bar-value">72</div>
                     </div>
                     <div className="bar-row">
                       <div className="bar-label">Balance</div>
                       <div className="bar-track">
-                        <div className="bar-fill green" style={{ width: "96%" }}></div>
+                        <div
+                          className="bar-fill green"
+                          style={{ width: "96%" }}
+                        ></div>
                       </div>
                       <div className="bar-value">96</div>
                     </div>
                     <div className="bar-row">
                       <div className="bar-label">Receipts</div>
                       <div className="bar-track">
-                        <div className="bar-fill red" style={{ width: "58%" }}></div>
+                        <div
+                          className="bar-fill red"
+                          style={{ width: "58%" }}
+                        ></div>
                       </div>
                       <div className="bar-value">58</div>
                     </div>
                     <div className="bar-row">
                       <div className="bar-label">Recon</div>
                       <div className="bar-track">
-                        <div className="bar-fill amber" style={{ width: "80%" }}></div>
+                        <div
+                          className="bar-fill amber"
+                          style={{ width: "80%" }}
+                        ></div>
                       </div>
                       <div className="bar-value">80</div>
                     </div>
@@ -223,9 +247,7 @@ export default function DashboardPage({ showPage }) {
                     onClick={() => showPage("balance")}
                   >
                     <div className="status-tile-name">Balance Sheet</div>
-                    <div className="status-tile-status text-green">
-                      Passed
-                    </div>
+                    <div className="status-tile-status text-green">Passed</div>
                   </div>
                   <div
                     className="status-tile alert"
@@ -241,9 +263,7 @@ export default function DashboardPage({ showPage }) {
                     onClick={() => showPage("recon")}
                   >
                     <div className="status-tile-name">Reconciliation</div>
-                    <div className="status-tile-status text-amber">
-                      2 Gaps
-                    </div>
+                    <div className="status-tile-status text-amber">2 Gaps</div>
                   </div>
                 </div>
               </div>

@@ -15,7 +15,7 @@ export default function Nav({ page, showPage }) {
   return (
     <nav>
       <button className="nav-logo" onClick={() => showPage("landing")}>
-        <span className="dot"></span> AuditAI
+        <span className="dot"></span> FinSightOps
       </button>
       <ul className="nav-links">
         {NAV_ITEMS.map((item) => (
@@ -29,9 +29,9 @@ export default function Nav({ page, showPage }) {
           </li>
         ))}
       </ul>
-      <button className="nav-cta" onClick={() => showPage("upload")}>
-        Open Audit
-      </button>
+      {/* <button className="nav-cta" onClick={() => showPage("upload")}>
+        Start Scan
+      </button> */}
     </nav>
   );
 }

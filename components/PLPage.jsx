@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import PeriodSelector, { FINANCIAL_YEARS } from "./PeriodSelector";
 
 const TABS = [
   { id: "summary", label: "Summary" },
@@ -11,17 +12,28 @@ const TABS = [
 
 export default function PLPage() {
   const [tab, setTab] = useState("summary");
+  const [financialYear, setFinancialYear] = useState(FINANCIAL_YEARS[0]);
+  const [quarter, setQuarter] = useState("all");
 
   return (
     <div>
+      <PeriodSelector
+        financialYear={financialYear}
+        quarter={quarter}
+        onFinancialYearChange={setFinancialYear}
+        onQuarterChange={setQuarter}
+        onRun={() => console.log("Run clicked", { financialYear, quarter })}
+      />
       <div className="page-header">
         <div>
           <h2>P&amp;L Analysis</h2>
-          <div className="sub">Q3 2024 · Margins, trends &amp; deviation flags</div>
+          <div className="sub">
+            Q3 2024 · Margins, trends &amp; deviation flags
+          </div>
         </div>
         <div className="header-actions">
           <span className="badge badge-amber">1 Warning</span>
-          <span className="badge badge-green">Score 72</span>
+          {/* <span className="badge badge-green">Score 72</span> */}
         </div>
       </div>
 
@@ -83,8 +95,8 @@ export default function PLPage() {
                         Marketing expense +38% above 8-quarter mean.
                       </strong>{" "}
                       This is a 2.1σ deviation. Similar spikes occurred in Q1
-                      2022 and correlated with a new campaign launch — verify
-                      if this applies.
+                      2022 and correlated with a new campaign launch — verify if
+                      this applies.
                     </div>
                   </div>
                 </div>
@@ -92,9 +104,8 @@ export default function PLPage() {
                   <div className="finding-dot ok"></div>
                   <div>
                     <div className="finding-text">
-                      <strong>Revenue growth of 12% is consistent</strong>{" "}
-                      with trailing 4-quarter trend (avg 10.8%). No anomaly
-                      detected.
+                      <strong>Revenue growth of 12% is consistent</strong> with
+                      trailing 4-quarter trend (avg 10.8%). No anomaly detected.
                     </div>
                   </div>
                 </div>
@@ -102,9 +113,8 @@ export default function PLPage() {
                   <div className="finding-dot ok"></div>
                   <div>
                     <div className="finding-text">
-                      <strong>COGS margin held steady at 52.1%</strong>,
-                      within ±1.5% of historical norm. No cost-of-goods
-                      anomaly.
+                      <strong>COGS margin held steady at 52.1%</strong>, within
+                      ±1.5% of historical norm. No cost-of-goods anomaly.
                     </div>
                   </div>
                 </div>
@@ -146,7 +156,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "75%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "75%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -163,7 +176,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "65%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "65%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -183,7 +199,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--amber-400)", width: "50%" }}
+                          style={{
+                            background: "var(--amber-400)",
+                            width: "50%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -200,7 +219,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "55%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "55%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -237,7 +259,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "40%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "40%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -254,7 +279,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "30%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "30%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -271,7 +299,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "45%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "45%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -297,7 +328,10 @@ export default function PLPage() {
                       <span className="trend-bar">
                         <span
                           className="trend-fill"
-                          style={{ background: "var(--green-500)", width: "70%" }}
+                          style={{
+                            background: "var(--green-500)",
+                            width: "70%",
+                          }}
                         ></span>
                       </span>
                     </td>
@@ -387,9 +421,9 @@ export default function PLPage() {
                   <div className="finding-text">
                     <strong>Marketing &amp; Advertising — $340,000</strong>
                     <br />
-                    +38.2% above prior year. Exceeds 2σ threshold from
-                    8-quarter rolling mean ($246K ± $28K). Review supporting
-                    receipts and approval chain.
+                    +38.2% above prior year. Exceeds 2σ threshold from 8-quarter
+                    rolling mean ($246K ± $28K). Review supporting receipts and
+                    approval chain.
                   </div>
                   <div className="finding-meta">
                     DEVIATION 2.1σ · LINE 4.3 · REQUIRES REVIEW

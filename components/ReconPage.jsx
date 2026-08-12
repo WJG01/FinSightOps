@@ -1,13 +1,25 @@
 "use client";
 
+import { useState } from "react";
+import PeriodSelector, { FINANCIAL_YEARS } from "./PeriodSelector";
+
 export default function ReconPage() {
+  const [financialYear, setFinancialYear] = useState(FINANCIAL_YEARS[0]);
+  const [quarter, setQuarter] = useState("all");
   return (
     <div>
+      <PeriodSelector
+        financialYear={financialYear}
+        quarter={quarter}
+        onFinancialYearChange={setFinancialYear}
+        onQuarterChange={setQuarter}
+        onRun={() => console.log("Run clicked", { financialYear, quarter })}
+      />
       <div className="page-header">
         <div>
           <h2>Reconciliation</h2>
           <div className="sub">
-            Cross-document audit — P&amp;L · Balance Sheet · Receipts
+            Cross-document audit — P&amp;L · Balance Sheet · Financial Documents
           </div>
         </div>
         <div className="header-actions">
@@ -24,7 +36,7 @@ export default function ReconPage() {
           gap: "1.5rem",
         }}
       >
-        <div className="compile-bar">
+        {/* <div className="compile-bar">
           <div className="compile-info">
             <h4>Generate Unified Audit Report</h4>
             <p>
@@ -33,7 +45,7 @@ export default function ReconPage() {
             </p>
           </div>
           <button className="btn-compile">⬇ Compile Report</button>
-        </div>
+        </div> */}
 
         <div className="kpi-row">
           <div className="kpi-card">
@@ -104,9 +116,7 @@ export default function ReconPage() {
           </div>
           <div className="recon-row partial">
             <div className="recon-source">Receipt</div>
-            <div className="recon-item">
-              Office Depot (duplicate) — R-0031
-            </div>
+            <div className="recon-item">Office Depot (duplicate) — R-0031</div>
             <div className="recon-amounts">
               <div>
                 <div className="label">Receipt</div>$820
@@ -159,8 +169,7 @@ export default function ReconPage() {
               <div>
                 <div className="finding-text">
                   <strong>
-                    [CRITICAL] R-0047 appears forged and has no P&amp;L
-                    match.
+                    [CRITICAL] R-0047 appears forged and has no P&amp;L match.
                   </strong>{" "}
                   The $4,200 receipt from TechSupplies Co. shows metadata
                   tampering AND does not correspond to any expense line item.
@@ -207,9 +216,9 @@ export default function ReconPage() {
                   <strong>
                     [WARNING] Balance sheet A/R classification mismatch.
                   </strong>{" "}
-                  $24,500 aged receivable should be reclassified to
-                  non-current per GAAP. No P&amp;L impact but affects balance
-                  sheet presentation.
+                  $24,500 aged receivable should be reclassified to non-current
+                  per GAAP. No P&amp;L impact but affects balance sheet
+                  presentation.
                 </div>
                 <div className="finding-meta">BALANCE SHEET · GAAP</div>
               </div>

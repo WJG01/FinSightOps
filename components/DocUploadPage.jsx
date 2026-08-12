@@ -160,13 +160,30 @@ export default function DocUploadPage() {
     }
   };
 
+  // --- Selection state for running audit ---
+  const [selectedQuarters, setSelectedQuarters] = useState(new Set());
+
+  const toggleQuarterSelection = (key) => {
+    setSelectedQuarters((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+
+  const handleRunAudit = () => {
+    console.log("Run audit for quarters:", Array.from(selectedQuarters));
+    // TODO: call your run-trigger endpoint (e.g. the Lambda from earlier) here,
+    // passing the selected financial-year/quarter keys.
+  };
+
   return (
     <div>
       <div className="page-header">
         <div>
           <h2>Upload Document</h2>
           <div className="sub">
-            Submit a financial document for verification and audit
+            Upload financial documents to start Audit Run and Financial Analysis
             reconciliation
           </div>
         </div>
@@ -288,6 +305,15 @@ export default function DocUploadPage() {
         <div className="module-card">
           <div className="module-card-header">
             <div className="module-card-title">Uploaded Documents</div>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={handleRunAudit}
+              disabled={selectedQuarters.size === 0}
+              style={{ padding: "0.4rem 1.2rem", fontSize: "0.78rem" }}
+            >
+              Run Audit
+            </button>
           </div>
           <div className="module-card-body">
             {isLoadingDocs && <p>Loading documents…</p>}
@@ -404,10 +430,32 @@ export default function DocUploadPage() {
                                     {quarter}
                                   </span>
                                 </span>
-                                <span className="finding-meta">
-                                  {files.length === 0
-                                    ? "No documents"
-                                    : `${files.length} file${files.length === 1 ? "" : "s"}`}
+
+                                <span
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "0.6rem",
+                                  }}
+                                >
+                                  <span className="finding-meta">
+                                    {files.length === 0
+                                      ? "No documents"
+                                      : `${files.length} file${files.length === 1 ? "" : "s"}`}
+                                  </span>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedQuarters.has(key)}
+                                    disabled={files.length === 0}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={() => toggleQuarterSelection(key)}
+                                    style={{
+                                      accentColor: "var(--amber-400)",
+                                      cursor: files.length
+                                        ? "pointer"
+                                        : "not-allowed",
+                                    }}
+                                  />
                                 </span>
                               </div>
 

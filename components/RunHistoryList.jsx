@@ -39,9 +39,9 @@ export default function RunHistoryList() {
                     {run.status}
                   </span>
                 </div>
-                <div className="text-xs text-slate-500">
+                {/* <div className="text-xs text-slate-500">
                   {formatTimestamp(run.startedAt)} · Triggered by {run.triggeredBy}
-                </div>
+                </div> */}
               </div>
 
               <div className="flex items-center gap-6 text-xs text-slate-400">

@@ -39,12 +39,14 @@ body {
 nav {
   position: fixed; top: 0; left: 0; right: 0; z-index: 100;
   background: rgba(10,15,26,0.92);
-  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+          backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--slate-800);
-  display: flex; align-items: center; justify-content: space-between;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
   padding: 0 2rem; height: 60px;
 }
 .nav-logo {
+  grid-column: 1; justify-self: start;
   font-family: 'DM Serif Display', serif;
   font-size: 1.25rem; color: var(--white);
   display: flex; align-items: center; gap: 0.5rem;
@@ -52,7 +54,10 @@ nav {
   background: none; border: none; cursor: pointer;
 }
 .nav-logo .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber-400); display: inline-block; }
-.nav-links { display: flex; gap: 0; list-style: none; }
+.nav-links {
+  grid-column: 2; justify-self: center;
+  display: flex; gap: 0; list-style: none;
+}
 .nav-links a {
   color: var(--slate-400); text-decoration: none;
   font-size: 0.8rem; font-weight: 500; letter-spacing: 0.05em;
@@ -65,6 +70,7 @@ nav {
 .nav-links a:hover, .nav-links a.active { color: var(--white); }
 .nav-links a.active { border-bottom: 2px solid var(--amber-400); }
 .nav-cta {
+  grid-column: 3; justify-self: end;
   background: var(--amber-400); color: var(--slate-950);
   border: none; padding: 0.45rem 1.2rem;
   font-size: 0.8rem; font-weight: 600; border-radius: 4px;
@@ -383,3 +389,150 @@ nav {
 .tab.active { color: var(--white); border-bottom-color: var(--amber-400); }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
+
+/* ── RUN PROGRESS ── */
+/* card header row inside a module-card, used for the "current run" summary */
+.run-card-top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap;
+  padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--slate-800);
+}
+.run-card-id { font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; color: var(--slate-500); }
+.run-card-meta { font-size: 0.8rem; color: var(--slate-300); margin-top: 0.25rem; }
+
+/* empty state when no run is active */
+.run-empty-state { padding: 3rem 2rem; text-align: center; }
+.run-empty-state p { font-size: 0.85rem; color: var(--slate-400); margin-bottom: 1.25rem; }
+
+/* overall progress bar (long line) */
+.run-overall-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 0.72rem; color: var(--slate-400); margin-bottom: 0.5rem;
+}
+.run-overall-meta .value { font-family: 'IBM Plex Mono', monospace; color: var(--slate-300); }
+.run-overall-bar-track {
+  height: 10px; width: 100%; background: var(--slate-800);
+  border-radius: 999px; overflow: hidden;
+}
+.run-overall-bar-fill {
+  height: 100%; border-radius: 999px; background: var(--amber-400);
+  transition: width 0.5s ease;
+}
+.run-overall-bar-fill.error { background: var(--red-500); }
+
+/* per-stage circular stepper */
+.run-stepper { display: flex; align-items: flex-start; margin-top: 2rem; }
+.run-stage { display: flex; flex: 1; align-items: flex-start; }
+.run-stage-col {
+  display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+  flex: 1; text-align: center;
+}
+.run-stage-circle {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.85rem; font-weight: 600; flex-shrink: 0;
+}
+.run-stage-circle.complete { background: var(--green-500); color: var(--white); }
+.run-stage-circle.running { background: var(--amber-400); color: var(--slate-950); animation: run-pulse 1.4s ease-in-out infinite; }
+.run-stage-circle.error { background: var(--red-500); color: var(--white); }
+.run-stage-circle.pending { background: var(--slate-800); color: var(--slate-500); border: 1px solid var(--slate-700); }
+
+@keyframes run-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+.run-stage-label { font-size: 0.72rem; font-weight: 500; }
+.run-stage-label.complete { color: var(--slate-200); }
+.run-stage-label.running { color: var(--amber-400); }
+.run-stage-label.error { color: var(--red-400); }
+.run-stage-label.pending { color: var(--slate-500); }
+.run-stage-duration { font-family: 'IBM Plex Mono', monospace; font-size: 0.62rem; color: var(--slate-500); }
+.run-stage-connector { margin-top: 17px; height: 2px; flex: 1; min-width: 8px; background: var(--slate-800); }
+.run-stage-connector.complete { background: var(--green-500); }
+
+.run-error-banner {
+  margin-top: 1.5rem; border: 1px solid rgba(239,68,68,0.25);
+  background: rgba(239,68,68,0.06); border-radius: 6px;
+  padding: 0.75rem 1rem; font-size: 0.8rem; color: var(--red-400);
+}
+
+/* history list rows */
+.run-history-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--slate-800);
+  flex-wrap: wrap; transition: background 0.15s;
+}
+.run-history-row:last-child { border-bottom: none; }
+.run-history-row:hover { background: var(--slate-800); }
+.run-history-id { font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; color: var(--slate-400); }
+.run-history-sub { font-size: 0.72rem; color: var(--slate-500); margin-top: 0.2rem; }
+.run-history-stats { display: flex; gap: 1.5rem; }
+.run-history-stat { text-align: center; font-size: 0.68rem; color: var(--slate-500); }
+.run-history-stat .stat-value {
+  display: block; font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem; color: var(--slate-200); margin-bottom: 0.15rem;
+}
+.run-details-btn {
+  flex-shrink: 0; border: 1px solid var(--slate-700); border-radius: 4px;
+  padding: 0.35rem 0.9rem; font-size: 0.72rem; color: var(--slate-300);
+  background: transparent; cursor: pointer; transition: all 0.15s;
+}
+.run-details-btn:hover { border-color: var(--amber-400); color: var(--amber-400); }
+
+/* run detail view */
+.run-detail-back {
+  font-size: 0.72rem; color: var(--slate-500); background: none;
+  border: none; cursor: pointer; padding: 0; margin-bottom: 0.5rem;
+}
+.run-detail-back:hover { color: var(--amber-400); }
+.run-detail-summary {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+  background: var(--slate-800); border: 1px solid var(--slate-800);
+  border-radius: 8px; overflow: hidden;
+}
+@media (max-width: 700px) { .run-detail-summary { grid-template-columns: repeat(2, 1fr); } }
+.run-detail-summary-item { background: var(--slate-900); padding: 1.25rem; }
+.run-detail-summary-item .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--slate-400); }
+.run-detail-summary-item .value { font-family: 'DM Serif Display', serif; font-size: 1.4rem; color: var(--white); margin-top: 0.35rem; }
+
+.run-stage-row { display: flex; align-items: flex-start; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--slate-800); }
+.run-stage-row:last-child { border-bottom: none; }
+.run-stage-row-num {
+  width: 28px; height: 28px; border-radius: 50%; background: var(--slate-800);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; color: var(--slate-400);
+  flex-shrink: 0;
+}
+.run-stage-row-title { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.run-stage-row-status { display: flex; align-items: center; gap: 0.4rem; font-size: 0.72rem; }
+.run-stage-row-dot { width: 6px; height: 6px; border-radius: 50%; }
+.run-stage-row-duration { font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; color: var(--slate-500); }
+
+/* ── PERIOD FILTER (Financial Year / Quarter selector) ── */
+.period-filter-bar {
+  display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;
+  padding: 1rem 2rem; border-bottom: 1px solid var(--slate-800);
+  background: var(--slate-900);
+}
+.period-filter-group { display: flex; align-items: center; gap: 0.6rem; }
+.period-filter-label {
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--slate-400); font-weight: 500;
+}
+.period-filter-select {
+  background: var(--slate-800); border: 1px solid var(--slate-700);
+  border-radius: 4px; padding: 0.4rem 0.7rem; font-size: 0.8rem;
+  color: var(--white); font-family: 'Inter', sans-serif;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.period-filter-select:hover { border-color: var(--slate-600); }
+.period-filter-select:focus { outline: none; border-color: var(--amber-400); }
+.period-filter-fields {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+.period-filter-run {
+  padding: 0.45rem 1.5rem;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}

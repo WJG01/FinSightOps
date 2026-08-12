@@ -113,12 +113,16 @@ function formatTimestamp(iso) {
 
 function totalRunDurationSeconds(run) {
   if (!run.finishedAt) return null;
-  return Math.round((new Date(run.finishedAt) - new Date(run.startedAt)) / 1000);
+  return Math.round(
+    (new Date(run.finishedAt) - new Date(run.startedAt)) / 1000,
+  );
 }
 
 function getStageCompletion(run) {
   const total = STAGES.length;
-  const complete = STAGES.filter((s) => run.stages[s.key]?.status === "complete").length;
+  const complete = STAGES.filter(
+    (s) => run.stages[s.key]?.status === "complete",
+  ).length;
   return { complete, total, pct: Math.round((complete / total) * 100) };
 }
 
@@ -145,7 +149,9 @@ function RunProgressOverview({ run }) {
 
   const { complete, total, pct } = getStageCompletion(run);
   const hasError = STAGES.some((s) => run.stages[s.key]?.status === "error");
-  const errorStage = Object.values(run.stages).find((s) => s.status === "error");
+  const errorStage = Object.values(run.stages).find(
+    (s) => s.status === "error",
+  );
 
   return (
     <div className="module-card">
@@ -153,11 +159,18 @@ function RunProgressOverview({ run }) {
         <div>
           <div className="run-card-id">{run.id}</div>
           <div className="run-card-meta">
-            Started {formatTimestamp(run.startedAt)} · {run.documentsProcessed}/{run.documentsTotal} documents
+            Started {formatTimestamp(run.startedAt)} · {run.documentsProcessed}/
+            {run.documentsTotal} documents
           </div>
         </div>
-        <span className={`badge ${run.status === "running" ? "badge-amber" : hasError ? "badge-red" : "badge-green"}`}>
-          {run.status === "running" ? "Running" : hasError ? "Failed" : "Completed"}
+        <span
+          className={`badge ${run.status === "running" ? "badge-amber" : hasError ? "badge-red" : "badge-green"}`}
+        >
+          {run.status === "running"
+            ? "Running"
+            : hasError
+              ? "Failed"
+              : "Completed"}
         </span>
       </div>
 
@@ -169,7 +182,10 @@ function RunProgressOverview({ run }) {
           </span>
         </div>
         <div className="run-overall-bar-track">
-          <div className={`run-overall-bar-fill ${hasError ? "error" : ""}`} style={{ width: `${pct}%` }}></div>
+          <div
+            className={`run-overall-bar-fill ${hasError ? "error" : ""}`}
+            style={{ width: `${pct}%` }}
+          ></div>
         </div>
 
         <div className="run-stepper">
@@ -182,10 +198,18 @@ function RunProgressOverview({ run }) {
                   <div className={`run-stage-circle ${stageData.status}`}>
                     <StageIcon status={stageData.status} index={idx} />
                   </div>
-                  <div className={`run-stage-label ${stageData.status}`}>{stage.label}</div>
-                  <div className="run-stage-duration">{formatDuration(stageData.durationSeconds)}</div>
+                  <div className={`run-stage-label ${stageData.status}`}>
+                    {stage.label}
+                  </div>
+                  <div className="run-stage-duration">
+                    {formatDuration(stageData.durationSeconds)}
+                  </div>
                 </div>
-                {!isLast && <div className={`run-stage-connector ${stageData.status === "complete" ? "complete" : ""}`}></div>}
+                {!isLast && (
+                  <div
+                    className={`run-stage-connector ${stageData.status === "complete" ? "complete" : ""}`}
+                  ></div>
+                )}
               </div>
             );
           })}
@@ -211,36 +235,58 @@ function RunHistoryList({ onSelectRun }) {
           const { complete, total } = getStageCompletion(run);
           const durationSeconds = totalRunDurationSeconds(run);
           const badgeClass =
-            run.status === "running" ? "badge-amber" : run.status === "failed" ? "badge-red" : "badge-green";
+            run.status === "running"
+              ? "badge-amber"
+              : run.status === "failed"
+                ? "badge-red"
+                : "badge-green";
 
           return (
             <div className="run-history-row" key={run.id}>
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.6rem",
+                  }}
+                >
                   <span className="run-history-id">{run.id}</span>
                   <span className={`badge ${badgeClass}`}>{run.status}</span>
                 </div>
-                <div className="run-history-sub">
+                {/* <div className="run-history-sub">
                   {formatTimestamp(run.startedAt)} · Triggered by {run.triggeredBy}
-                </div>
+                </div> */}
               </div>
 
               <div className="run-history-stats">
                 <div className="run-history-stat">
-                  <span className="stat-value">{complete}/{total}</span>
+                  <span className="stat-value">
+                    {complete}/{total}
+                  </span>
                   Stages
                 </div>
                 <div className="run-history-stat">
-                  <span className="stat-value">{run.documentsProcessed}/{run.documentsTotal}</span>
+                  <span className="stat-value">
+                    {run.documentsProcessed}/{run.documentsTotal}
+                  </span>
                   Documents
                 </div>
                 <div className="run-history-stat">
-                  <span className="stat-value">{run.status === "running" ? "—" : formatDuration(durationSeconds)}</span>
+                  <span className="stat-value">
+                    {run.status === "running"
+                      ? "—"
+                      : formatDuration(durationSeconds)}
+                  </span>
                   Duration
                 </div>
               </div>
 
-              <button type="button" className="run-details-btn" onClick={() => onSelectRun(run.id)}>
+              <button
+                type="button"
+                className="run-details-btn"
+                onClick={() => onSelectRun(run.id)}
+              >
                 Details
               </button>
             </div>
@@ -253,8 +299,16 @@ function RunHistoryList({ onSelectRun }) {
 
 /* ── Run detail view ── */
 const STATUS_META = {
-  complete: { label: "Complete", dotColor: "var(--green-500)", textClass: "text-green" },
-  running: { label: "Running", dotColor: "var(--amber-400)", textClass: "text-amber" },
+  complete: {
+    label: "Complete",
+    dotColor: "var(--green-500)",
+    textClass: "text-green",
+  },
+  running: {
+    label: "Running",
+    dotColor: "var(--amber-400)",
+    textClass: "text-amber",
+  },
   error: { label: "Failed", dotColor: "var(--red-500)", textClass: "text-red" },
   pending: { label: "Pending", dotColor: "var(--slate-600)", textClass: "" },
 };
@@ -264,7 +318,18 @@ function RunDetail({ runId, onBack }) {
   if (!run) return null;
 
   const durationSeconds = totalRunDurationSeconds(run);
-  const badgeClass = run.status === "running" ? "badge-amber" : run.status === "failed" ? "badge-red" : "badge-green";
+  const badgeClass =
+    run.status === "running"
+      ? "badge-amber"
+      : run.status === "failed"
+        ? "badge-red"
+        : "badge-green";
+
+  const [expandedStages, setExpandedStages] = useState({});
+
+  const toggleStage = (key) => {
+    setExpandedStages((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   return (
     <div>
@@ -273,31 +338,52 @@ function RunDetail({ runId, onBack }) {
           <button type="button" className="run-detail-back" onClick={onBack}>
             ← Back to Runs
           </button>
-          <h2 className="mono" style={{ fontSize: "1.4rem" }}>{run.id}</h2>
-          <div className="sub">Started {formatTimestamp(run.startedAt)} · Triggered by {run.triggeredBy}</div>
+          <h2 className="mono" style={{ fontSize: "1.4rem" }}>
+            {run.id}
+          </h2>
+          {/* <div className="sub">Started {formatTimestamp(run.startedAt)} · Triggered by {run.triggeredBy}</div> */}
         </div>
         <span className={`badge ${badgeClass}`}>{run.status}</span>
       </div>
 
-      <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div
+        style={{
+          padding: "2rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "1.5rem",
+        }}
+      >
         <div className="run-detail-summary">
           <div className="run-detail-summary-item">
             <div className="label">Documents</div>
-            <div className="value">{run.documentsProcessed}/{run.documentsTotal}</div>
+            <div className="value">
+              {run.documentsProcessed}/{run.documentsTotal}
+            </div>
           </div>
           <div className="run-detail-summary-item">
             <div className="label">Duration</div>
-            <div className="value">{run.status === "running" ? "In progress" : formatDuration(durationSeconds)}</div>
+            <div className="value">
+              {run.status === "running"
+                ? "In progress"
+                : formatDuration(durationSeconds)}
+            </div>
           </div>
           <div className="run-detail-summary-item">
             <div className="label">Started</div>
-            <div className="value" style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.9rem" }}>
+            <div
+              className="value"
+              style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.9rem" }}
+            >
               {formatTimestamp(run.startedAt)}
             </div>
           </div>
           <div className="run-detail-summary-item">
             <div className="label">Finished</div>
-            <div className="value" style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.9rem" }}>
+            <div
+              className="value"
+              style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.9rem" }}
+            >
               {formatTimestamp(run.finishedAt)}
             </div>
           </div>
@@ -311,24 +397,116 @@ function RunDetail({ runId, onBack }) {
             {STAGES.map((stage, idx) => {
               const stageData = run.stages[stage.key] || { status: "pending" };
               const meta = STATUS_META[stageData.status] || STATUS_META.pending;
+              const isExpanded = !!expandedStages[stage.key];
+
               return (
-                <div className="run-stage-row" key={stage.key}>
-                  <div className="run-stage-row-num">{idx + 1}</div>
-                  <div style={{ flex: 1 }}>
-                    <div className="run-stage-row-title">
-                      <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--white)" }}>{stage.label}</span>
-                      <span className={`run-stage-row-status ${meta.textClass}`}>
-                        <span className="run-stage-row-dot" style={{ background: meta.dotColor }}></span>
-                        {meta.label}
-                      </span>
-                    </div>
-                    {stageData.status === "error" && stageData.errorMessage && (
-                      <div className="run-error-banner" style={{ marginTop: "0.6rem" }}>
-                        {stageData.errorMessage}
+                <div key={stage.key}>
+                  <div
+                    className="run-stage-row"
+                    onClick={() => toggleStage(stage.key)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <div className="run-stage-row-num">{idx + 1}</div>
+                    <div style={{ flex: 1 }}>
+                      <div className="run-stage-row-title">
+                        <span
+                          style={{
+                            fontSize: "0.85rem",
+                            fontWeight: 600,
+                            color: "var(--white)",
+                          }}
+                        >
+                          {stage.label}
+                        </span>
+                        <span
+                          className={`run-stage-row-status ${meta.textClass}`}
+                        >
+                          <span
+                            className="run-stage-row-dot"
+                            style={{ background: meta.dotColor }}
+                          ></span>
+                          {meta.label}
+                        </span>
                       </div>
-                    )}
+                      {stageData.status === "error" &&
+                        stageData.errorMessage && (
+                          <div
+                            className="run-error-banner"
+                            style={{ marginTop: "0.6rem" }}
+                          >
+                            {stageData.errorMessage}
+                          </div>
+                        )}
+                    </div>
+                    <div className="run-stage-row-duration">
+                      {formatDuration(stageData.durationSeconds)}
+                    </div>
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--gray-400, #9ca3af)"
+                      strokeWidth="2"
+                      style={{
+                        marginLeft: "0.75rem",
+                        flexShrink: 0,
+                        transform: isExpanded
+                          ? "rotate(180deg)"
+                          : "rotate(0deg)",
+                        transition: "transform 0.15s ease",
+                      }}
+                    >
+                      <path
+                        d="M6 9l6 6 6-6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
                   </div>
-                  <div className="run-stage-row-duration">{formatDuration(stageData.durationSeconds)}</div>
+
+                  {isExpanded && (
+                    <div
+                      style={{
+                        margin: "0 0 0.75rem 0",
+                        padding: "0.75rem",
+                        background: "var(--black-800, #111318)",
+                        border: "1px solid var(--gray-700, #2a2d35)",
+                        borderRadius: "8px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "0.7rem",
+                          fontWeight: 600,
+                          letterSpacing: "0.03em",
+                          textTransform: "uppercase",
+                          color: "var(--gray-400, #9ca3af)",
+                          marginBottom: "0.4rem",
+                        }}
+                      >
+                        Stage Output
+                      </div>
+                      <pre
+                        style={{
+                          margin: 0,
+                          padding: "0.6rem",
+                          background: "var(--black-900, #0a0b0d)",
+                          borderRadius: "6px",
+                          fontSize: "0.75rem",
+                          lineHeight: 1.5,
+                          color: "var(--gray-200, #e5e7eb)",
+                          fontFamily: "var(--font-mono, monospace)",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          maxHeight: "320px",
+                          overflowY: "auto",
+                        }}
+                      >
+                        {JSON.stringify(stageData.log ?? stageData, null, 2)}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -345,7 +523,9 @@ export default function RunProgressPage() {
   const currentRun = MOCK_RUNS.find((r) => r.status === "running") || null;
 
   if (selectedRunId) {
-    return <RunDetail runId={selectedRunId} onBack={() => setSelectedRunId(null)} />;
+    return (
+      <RunDetail runId={selectedRunId} onBack={() => setSelectedRunId(null)} />
+    );
   }
 
   return (
@@ -353,11 +533,21 @@ export default function RunProgressPage() {
       <div className="page-header">
         <div>
           <h2>Run Progress</h2>
-          <div className="sub">Ingestion → extraction → ledger → P&amp;L → balance sheet → reconciliation → output</div>
+          <div className="sub">
+            Ingestion → extraction → ledger → P&amp;L → balance sheet →
+            reconciliation → output
+          </div>
         </div>
       </div>
 
-      <div style={{ padding: "2rem", display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <div
+        style={{
+          padding: "2rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "1.5rem",
+        }}
+      >
         <RunProgressOverview run={currentRun} />
         <RunHistoryList onSelectRun={setSelectedRunId} />
       </div>
