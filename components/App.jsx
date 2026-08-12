@@ -9,8 +9,7 @@ import PLPage from "./PLPage";
 import BalancePage from "./BalancePage";
 import ReceiptsPage from "./ReceiptsPage";
 import ReconPage from "./ReconPage";
-import SettingsPage from "./SettingsPage";
-
+import RunProgress from "./RunProgressPage";
 export default function App() {
   const [page, setPage] = useState("landing");
 
@@ -34,6 +33,7 @@ export default function App() {
         {page === "receipts" && <ReceiptsPage />}
         {page === "recon" && <ReconPage />}
         {page === "settings" && <SettingsPage />}
+        {page === "run" && <RunProgress/>}
       </div>
     </>
   );

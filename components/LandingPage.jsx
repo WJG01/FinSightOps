@@ -17,14 +17,19 @@ export default function LandingPage({ showPage }) {
         into a single unified finding.
       </p>
       <div className="hero-actions">
-        <button className="btn-primary" onClick={() => showPage("dashboard")}>
-          Open Dashboard
+        <button className="btn-primary" onClick={() => showPage("summary")}>
+          Open Summary
         </button>
         <button className="btn-ghost" onClick={() => showPage("recon")}>
           View Reconciliation
         </button>
       </div>
       <div className="feature-grid">
+        <div className="feature-card" onClick={() => showPage("upload")}>
+          <div className="feature-icon">📤</div>
+          <h3>Upload Doc</h3>
+          <p>Upload your raw documents here.</p>
+        </div>
         <div className="feature-card" onClick={() => showPage("pl")}>
           <div className="feature-icon">📊</div>
           <h3>P&amp;L Analysis</h3>
@@ -41,6 +46,19 @@ export default function LandingPage({ showPage }) {
             spots misclassified entries.
           </p>
         </div>
+        <div className="feature-card" onClick={() => showPage("recon")}>
+          <div className="feature-icon">🔍</div>
+          <h3>Reconciliation</h3>
+          <p>
+            Cross-checks all three sources, ensures receipts tie to P&amp;L
+            expenses, compiles unified findings.
+          </p>
+        </div>
+        <div className="feature-card" onClick={() => showPage("recon")}>
+          <div className="feature-icon">📋</div>
+          <h3>Summary</h3>
+          <p>Final Consolidated Summary Finding</p>
+        </div>
         {/* <div className="feature-card" onClick={() => showPage("receipts")}>
           <div className="feature-icon">🧾</div>
           <h3>Receipt Authenticity</h3>
@@ -49,19 +67,6 @@ export default function LandingPage({ showPage }) {
             metadata and AI analysis.
           </p>
         </div> */}
-        <div className="feature-card" onClick={() => showPage("recon")}>
-          <div className="feature-icon">🔗</div>
-          <h3>Reconciliation</h3>
-          <p>
-            Cross-checks all three sources, ensures receipts tie to P&amp;L
-            expenses, compiles unified findings.
-          </p>
-        </div>
-        <div className="feature-card" onClick={() => showPage("upload")}>
-          <div className="feature-icon">🔗</div>
-          <h3>Upload</h3>
-          <p>Upload your raw documents here.</p>
-        </div>
       </div>
     </div>
   );
