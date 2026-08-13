@@ -349,11 +349,11 @@ export default function BalanceSheetPage() {
 
           <div style={{ flex: 1 }} />
 
-          {sheet && !loading && (
+          {/* {sheet && !loading && (
             <button className="run-details-btn" onClick={() => setShowRaw(v => !v)}>
               {showRaw ? 'Hide raw JSON' : 'View raw JSON'}
             </button>
-          )}
+          )} */}
         </div>
 
         {/* ── Error ────────────────────────────────────────── */}

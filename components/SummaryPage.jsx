@@ -821,7 +821,7 @@ export default function SummaryPage({ showPage }) {
                         ? new Date(a.meta.completedAt).toLocaleString()
                         : "—",
                     ],
-                    ["Model", a.meta.model],
+                    // ["Model", a.meta.model],
                   ].map(([k, v]) => (
                     <div
                       key={k}

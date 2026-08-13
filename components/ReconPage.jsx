@@ -583,7 +583,7 @@ export default function Reconciliation({
           {status === "loading" ? "Running…" : "Run"}
         </button>
 
-        <span className="run-card-id">run_id: {runId}</span>
+        {/* <span className="run-card-id">run_id: {runId}</span> */}
       </div>
 
       {/* header */}
