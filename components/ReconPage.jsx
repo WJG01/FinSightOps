@@ -1,527 +1,675 @@
-"use client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * FinSightOps — Reconciliation Page
+ * Reconciliation & Tie-Out page — FinSightOps
  *
- * Uses the global app CSS (no module import needed).
- * Drop in as: app/reconciliation/page.jsx  (App Router)
- *          or pages/reconciliation.jsx      (Pages Router — remove 'use client')
+ * Talks to API Gateway → Lambda (scan of `auditai-output`):
+ *   POST  {endpoint}
+ *   body  { "financial_year": "2026", "quarter": "Q4" }
  *
- * API: POST https://aeg0uq46dk.execute-api.ap-southeast-1.amazonaws.com/default/finsight-reconciliation-agent
- *      Body: { "run_id": "<string>" }
+ * The Lambda answers with the latest record for that run_id prefix:
+ *   { "statusCode": 200, "body": { ...full run record... } }
+ *
+ * This page reads ONLY `body.reconciliation_output`. Every other section of
+ * the record (pnl_output, ledger_output, balance_sheet_output, …) is ignored.
+ *
+ * Styling relies on the global FinSightOps stylesheet (.pl-table, .tab-bar,
+ * .kpi-row, .finding-item, .badge-*, …). No CSS is imported here.
  */
 
-import { useState, useCallback } from 'react';
+const DEFAULT_ENDPOINT = "https://j2aac6i6f0.execute-api.ap-southeast-1.amazonaws.com/default/finsight-upload-lookup-agent";
 
-/* ─── Constants ───────────────────────────────────────────── */
-const API_URL =
-  'https://aeg0uq46dk.execute-api.ap-southeast-1.amazonaws.com/default/finsight-reconciliation-agent';
+const YEARS = ["2026", "2025", "2024"];
+// The Lambda requires a quarter, so there is no "All" option.
+const QUARTERS = ["Q1", "Q2", "Q3", "Q4"];
 
-/* ─── Data helpers ────────────────────────────────────────── */
+const TABS = [
+  { id: "summary", label: "Summary" },
+  { id: "tieouts", label: "Tie-Outs" },
+  { id: "exceptions", label: "Exceptions" },
+  { id: "narrative", label: "Narrative" },
+];
 
-/**
- * Normalise the Lambda/API Gateway response into a predictable shape.
- * Handles three common response wrappers:
- *   1. Raw object           → { checks, summary, narrative, … }
- *   2. { body: "string" }  → JSON-parse the string
- *   3. { body: object }    → unwrap the object
- */
-function normalise(raw) {
-  let data = raw;
-  if (typeof data?.body === 'string') {
-    try { data = JSON.parse(data.body); } catch { /* keep raw */ }
-  } else if (data?.body && typeof data.body === 'object') {
-    data = data.body;
+/* ────────────────────────── helpers ────────────────────────── */
+
+const toNumber = (v) => {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (v == null || v === "") return null;
+  const n = Number(String(v).replace(/[^0-9.eE+-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+};
+
+/** DynamoDB hands numbers back as strings ("3413.2"), so format defensively. */
+const amount = (v, currency) => {
+  const n = toNumber(v);
+  if (n == null) return v == null || v === "" ? "—" : String(v);
+  const body = n.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return currency ? `${currency} ${body}` : body;
+};
+
+const WORDS = {
+  pnl: "P&L",
+  pl: "P&L",
+  vs: "vs",
+  id: "ID",
+  cogs: "COGS",
+};
+
+const titleize = (raw) =>
+  String(raw ?? "")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .map((w, i) => {
+      const hit = WORDS[w.toLowerCase()];
+      if (hit) return hit;
+      return i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w;
+    })
+    .join(" ") || "—";
+
+const STATUS = {
+  pass: { tone: "ok", badge: "badge-green", text: "✓ Pass" },
+  passed: { tone: "ok", badge: "badge-green", text: "✓ Pass" },
+  ok: { tone: "ok", badge: "badge-green", text: "✓ Pass" },
+  balanced: { tone: "ok", badge: "badge-green", text: "✓ Balanced" },
+  skipped: { tone: "warn", badge: "badge-amber", text: "⊘ Skipped" },
+  warn: { tone: "warn", badge: "badge-amber", text: "⚠ Review" },
+  warning: { tone: "warn", badge: "badge-amber", text: "⚠ Review" },
+  review: { tone: "warn", badge: "badge-amber", text: "⚠ Review" },
+  fail: { tone: "alert", badge: "badge-red", text: "✕ Fail" },
+  failed: { tone: "alert", badge: "badge-red", text: "✕ Fail" },
+  error: { tone: "alert", badge: "badge-red", text: "✕ Fail" },
+  exception: { tone: "alert", badge: "badge-red", text: "✕ Exception" },
+};
+
+const statusOf = (raw) => STATUS[String(raw ?? "").toLowerCase()] ?? STATUS.warn;
+
+const rowClass = (tone) =>
+  tone === "alert" ? "error" : tone === "warn" ? "flagged" : "";
+
+const timestamp = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? String(iso)
+    : d.toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+};
+
+/* ────────────────────────── response unwrapping ────────────────────────── */
+
+const tryParse = (s) => {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return s;
   }
+};
 
-  const checks  = data?.checks  ?? data?.results ?? [];
-  const summary = data?.summary ?? buildSummary(checks);
+/**
+ * Peels the Lambda / API Gateway envelope and returns the DynamoDB record.
+ * Handles all three shapes we see in the wild:
+ *   { statusCode, body: { … } }            → non-proxy integration
+ *   { statusCode, body: "{ … }" }          → proxy integration (stringified)
+ *   { … }                                  → mapping template already unwrapped
+ * Throws with the Lambda's own message on 400 / 404.
+ */
+function unwrapRecord(json) {
+  let payload = typeof json === "string" ? tryParse(json) : json;
+
+  if (payload && typeof payload === "object" && "body" in payload) {
+    const code = Number(payload.statusCode ?? 200);
+    const inner =
+      typeof payload.body === "string" ? tryParse(payload.body) : payload.body;
+
+    if (code >= 400) {
+      throw new Error(
+        typeof inner === "string"
+          ? inner
+          : inner?.message ?? `The audit service returned ${code}.`
+      );
+    }
+    return inner;
+  }
+  return payload;
+}
+
+/* ────────────────────────── normalisation ────────────────────────── */
+
+function normalizeTieOut(raw = {}) {
+  const status = statusOf(raw.status);
+  const difference = toNumber(raw.difference);
 
   return {
-    run_id:      data?.run_id      ?? data?.runId     ?? '—',
-    status:      data?.status                         ?? deriveStatus(summary),
-    summary,
-    checks,
-    narrative:   data?.narrative   ?? data?.reasoning ?? data?.explanation ?? null,
-    model:       data?.model       ?? data?.model_id  ?? null,
-    generatedAt: data?.generated_at ?? data?.timestamp ?? new Date().toISOString(),
-    _raw: raw,
+    key: raw.check ?? raw.name ?? raw.id,
+    check: titleize(raw.check ?? raw.name ?? "Unnamed check"),
+    leftLabel: raw.left_label ? titleize(raw.left_label) : null,
+    left: raw.left,
+    rightLabel: raw.right_label ? titleize(raw.right_label) : null,
+    right: raw.right,
+    difference,
+    hasDifference: difference != null,
+    // A non-zero difference is always worth calling out, even on a PASS row.
+    driftsApart: difference != null && Math.abs(difference) > 0,
+    status,
+    explanation: raw.explanation ?? "",
+    reason: raw.reason ?? "",
   };
 }
 
-function buildSummary(checks) {
-  const passed  = checks.filter(c => getStatus(c) === 'PASS').length;
-  const skipped = checks.filter(c => getStatus(c) === 'SKIPPED').length;
-  const failed  = checks.filter(c => getStatus(c) === 'FAIL').length;
-  return { total: checks.length, passed, skipped, failed };
+function normalizeException(raw, index) {
+  if (typeof raw === "string") {
+    return {
+      key: `exception-${index}`,
+      title: raw,
+      detail: "",
+      status: STATUS.fail,
+      difference: null,
+    };
+  }
+  const src = raw ?? {};
+  return {
+    key: src.check ?? src.code ?? `exception-${index}`,
+    title: titleize(src.check ?? src.code ?? src.title ?? "Exception"),
+    detail: src.explanation ?? src.message ?? src.detail ?? src.reason ?? "",
+    status: statusOf(src.status ?? "fail"),
+    difference: toNumber(src.difference),
+  };
 }
 
-function deriveStatus({ failed = 0, total = 0 } = {}) {
-  if (!total) return 'UNKNOWN';
-  return failed > 0 ? 'FAIL' : 'PASS';
+/** Reads the reconciliation slice of the run record and nothing else. */
+function normalizeReconciliation(record, fallbackCurrency) {
+  const recon =
+    record?.reconciliation_output ??
+    record?.reconciliation ??
+    (record?.tie_outs ? record : null);
+
+  if (!recon) {
+    throw new Error("This run has no reconciliation_output to display.");
+  }
+
+  const tieOuts = (recon.tie_outs ?? []).map(normalizeTieOut);
+  const exceptions = (recon.exceptions ?? []).map(normalizeException);
+
+  const cash = recon.reconciliation
+    ? {
+        name: titleize(recon.reconciliation.name ?? "Cash reconciliation"),
+        status: statusOf(recon.reconciliation.status),
+        reason: recon.reconciliation.reason ?? "",
+        explanation: recon.reconciliation.explanation ?? "",
+      }
+    : null;
+
+  const counts = tieOuts.reduce(
+    (acc, t) => {
+      acc[t.status.tone] = (acc[t.status.tone] ?? 0) + 1;
+      return acc;
+    },
+    { ok: 0, warn: 0, alert: 0 }
+  );
+
+  const narrative = String(recon.narrative ?? "")
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  return {
+    runId: recon.run_id ?? record?.run_id ?? null,
+    recordId: record?.run_id ?? null,
+    generatedAt: recon.generated_at ?? record?.completed_at ?? null,
+    currency: recon.currency ?? fallbackCurrency,
+    materiality: toNumber(recon.materiality),
+    agent: recon.agent ?? null,
+    modelId: recon.model_id ?? null,
+    schemaVersion: recon.schema_version ?? null,
+    overall: statusOf(recon.status),
+    tieOuts,
+    exceptions,
+    skipped: (recon.skipped ?? []).map(titleize),
+    cash,
+    counts,
+    narrative,
+  };
 }
 
-/** Normalise status string regardless of casing or aliases */
-function getStatus(check) {
-  const s = (check?.status ?? check?.result ?? '').toUpperCase();
-  if (['PASS', 'PASSED', 'OK'].includes(s))           return 'PASS';
-  if (['SKIP', 'SKIPPED', 'N/A'].includes(s))         return 'SKIPPED';
-  if (['FAIL', 'FAILED', 'ERROR'].includes(s))        return 'FAIL';
-  return s || 'UNKNOWN';
-}
+/* ────────────────────────── tabs ────────────────────────── */
 
-/** Extract up to N key-value pairs from a check's values/data/details field */
-function valueEntries(check, max = 2) {
-  const src = check?.values ?? check?.data ?? check?.details ?? null;
-  if (!src || typeof src !== 'object') return [];
-  return Object.entries(src)
-    .filter(([, v]) => v !== null && v !== undefined)
-    .slice(0, max);
-}
-
-function fmt(v) {
-  if (typeof v === 'number')
-    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return String(v);
-}
-
-/* ─── Sub-components ──────────────────────────────────────── */
-
-/** A single tie-out check row using the existing .recon-row classes */
-function CheckRow({ check }) {
-  const status   = getStatus(check);
-  const isSkip   = status === 'SKIPPED';
-  const isFail   = status === 'FAIL';
-  const entries  = valueEntries(check);
-
-  // Map status → existing CSS modifier class
-  const rowMod    = isFail ? 'mismatch' : isSkip ? 'partial' : '';
-  const resultMod = isFail ? 'fail'     : isSkip ? 'partial' : 'ok';
-  const label     = status === 'PASS' ? '✓ PASS' : status === 'FAIL' ? '✗ FAIL' : 'SKIPPED';
-
-  const skipNote =
-    check?.skip_reason ?? check?.reason ?? check?.note ?? null;
+function SummaryTab({ data }) {
+  const cards = [
+    { label: "Checks passed", value: data.counts.ok, tone: "ok" },
+    { label: "Checks skipped", value: data.counts.warn, tone: "warn" },
+    { label: "Checks failed", value: data.counts.alert, tone: "alert" },
+    { label: "Exceptions", value: data.exceptions.length, tone: "alert" },
+  ];
 
   return (
-    <div className={`recon-row ${rowMod}`}>
-
-      {/* Status icon column — reusing .recon-source width */}
-      <div className="recon-source" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-          background: isFail ? 'var(--red-500)' : isSkip ? 'var(--slate-600)' : 'var(--green-500)',
-          display: 'inline-block',
-        }} />
-        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>
-          {status}
-        </span>
+    <div style={{ padding: "1.5rem" }}>
+      <div className="kpi-row">
+        {cards.map((c) => (
+          <div
+            key={c.label}
+            className={`kpi-card ${c.value > 0 && c.tone === "alert" ? "alert" : ""}`}
+          >
+            <div className="kpi-label">{c.label}</div>
+            <div className="kpi-value">{c.value}</div>
+          </div>
+        ))}
       </div>
 
-      {/* Check name + explanation */}
-      <div className="recon-item">
-        <div style={{ fontWeight: 600, color: 'var(--white)', fontSize: '0.85rem' }}>
-          {check.name ?? check.check_name ?? check.id ?? 'Unnamed check'}
-        </div>
-        {check.explanation && (
-          <div style={{ fontSize: '0.72rem', color: 'var(--slate-500)', marginTop: '0.2rem' }}>
-            {check.explanation}
-          </div>
-        )}
-        {isSkip && skipNote && (
-          <div style={{ fontSize: '0.72rem', color: 'var(--slate-500)', fontStyle: 'italic', marginTop: '0.2rem' }}>
-            {skipNote}
-          </div>
-        )}
-      </div>
+      <div className="separator" />
 
-      {/* Value columns — only for non-skipped checks */}
-      {!isSkip && entries.length > 0 ? (
-        <div className="recon-amounts">
-          {entries.map(([k, v]) => (
-            <div key={k}>
-              <div className="label">{k}</div>
-              <div>{fmt(v)}</div>
+      <div className="section-title">Cash reconciliation</div>
+      {data.cash ? (
+        <div className={`finding-item ${data.cash.status.tone}`}>
+          <span className={`finding-dot ${data.cash.status.tone}`} />
+          <div>
+            <div className="finding-text">
+              <strong>{data.cash.name}</strong> — {data.cash.status.text}
+              {data.cash.reason ? ` · ${data.cash.reason}` : ""}
             </div>
-          ))}
+            {data.cash.explanation ? (
+              <div className="finding-meta">{data.cash.explanation}</div>
+            ) : null}
+          </div>
         </div>
       ) : (
-        /* Keep grid shape for skipped rows */
-        <div style={{ flex: 1 }} />
+        <div className="empty-state">This run carried no cash reconciliation.</div>
       )}
 
-      {/* Result pill */}
-      <div className={`recon-result ${resultMod}`}>
-        {label}
-      </div>
-    </div>
-  );
-}
+      <div className="separator" />
 
-/** KPI card with left-border colour driven by context */
-function KpiCard({ label, value, variant = 'ok', mono = false }) {
-  // variant: 'ok' | 'warn' | 'alert' | 'neutral'
-  const extraClass = variant === 'warn' ? 'warn' : variant === 'alert' ? 'alert' : '';
-  const valueColor =
-    variant === 'ok'    ? 'var(--green-400)' :
-    variant === 'warn'  ? 'var(--amber-400)' :
-    variant === 'alert' ? 'var(--red-400)'   :
-    'var(--white)';
-
-  return (
-    <div className={`kpi-card ${extraClass}`}>
-      <div className="kpi-label">{label}</div>
-      <div
-        className="kpi-value"
-        style={{
-          color: valueColor,
-          fontFamily: mono ? 'var(--font-mono, "IBM Plex Mono", monospace)' : undefined,
-          fontSize: '1.75rem',
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-/** Skeleton shimmer — inline so no extra class needed */
-function Skeleton({ h = 60, radius = 6 }) {
-  return (
-    <div
-      style={{
-        height: h,
-        borderRadius: radius,
-        background: 'linear-gradient(90deg, #1e293b 25%, #273548 50%, #1e293b 75%)',
-        backgroundSize: '200% 100%',
-        animation: 'auditShimmer 1.4s infinite',
-      }}
-    />
-  );
-}
-
-/** Loading state — reuses existing card chrome */
-function LoadingState() {
-  return (
-    <div className="dashboard-body">
-      {/* KPI skeleton */}
-      <div className="kpi-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-        {[0, 1, 2, 3].map(i => (
-          <div key={i} className="kpi-card">
-            <Skeleton h={18} radius={4} />
-            <div style={{ marginTop: 10 }}>
-              <Skeleton h={32} radius={4} />
+      <div className="section-title">What needs attention</div>
+      {data.exceptions.length === 0 && data.counts.warn === 0 ? (
+        <div className="empty-state">Every tie-out ran and passed.</div>
+      ) : (
+        <div>
+          {data.exceptions.map((e) => (
+            <div key={e.key} className={`finding-item ${e.status.tone}`}>
+              <span className={`finding-dot ${e.status.tone}`} />
+              <div>
+                <div className="finding-text">
+                  <strong>{e.title}</strong>
+                  {e.difference != null
+                    ? ` — out by ${amount(e.difference, data.currency)}`
+                    : ""}
+                </div>
+                {e.detail ? <div className="finding-meta">{e.detail}</div> : null}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
 
-      {/* Check rows skeleton */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        {[0, 1, 2, 3, 4].map(i => (
-          <Skeleton key={i} h={64} />
-        ))}
-      </div>
-
-      {/* Narrative skeleton */}
-      <Skeleton h={180} />
+          {data.tieOuts
+            .filter((t) => t.status.tone === "warn")
+            .map((t) => (
+              <div key={t.key} className="finding-item warn">
+                <span className="finding-dot warn" />
+                <div>
+                  <div className="finding-text">
+                    <strong>{t.check}</strong> was skipped.
+                  </div>
+                  <div className="finding-meta">
+                    {t.reason || t.explanation || "No reason supplied."}
+                  </div>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ─── Main page ───────────────────────────────────────────── */
-export default function ReconciliationPage() {
-  const [runId,   setRunId]   = useState('2026-Q1');
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState(null);
-  const [result,  setResult]  = useState(null);
-  const [showRaw, setShowRaw] = useState(false);
-
-  const runAnalysis = useCallback(async () => {
-    if (!runId.trim() || loading) return;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    setShowRaw(false);
-
-    try {
-      const res = await fetch(API_URL, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ run_id: runId.trim() }),
-      });
-
-      const raw = await res.json().catch(() => ({ _raw: 'Non-JSON response' }));
-
-      if (!res.ok) {
-        throw new Error(
-          raw?.message ?? raw?.error ?? `HTTP ${res.status} — ${res.statusText}`
-        );
-      }
-
-      setResult(normalise(raw));
-    } catch (err) {
-      setError(err.message ?? 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  }, [runId, loading]);
-
-  const handleKey = (e) => { if (e.key === 'Enter') runAnalysis(); };
-
-  /* Derived values */
-  const { summary, checks = [], status, narrative, model, generatedAt, _raw } = result ?? {};
-  const passed  = summary?.passed  ?? 0;
-  const skipped = summary?.skipped ?? 0;
-  const failed  = summary?.failed  ?? 0;
-  const total   = summary?.total   ?? 0;
-
-  const overallVariant =
-    status === 'PASS' ? 'ok' : status === 'FAIL' ? 'alert' : 'warn';
+function TieOutsTab({ data }) {
+  if (data.tieOuts.length === 0) {
+    return <div className="empty-state">This run returned no tie-out checks.</div>;
+  }
 
   return (
-    <>
-      {/* Shimmer keyframe — injected once, no extra file needed */}
-      <style>{`
-        @keyframes auditShimmer {
-          0%   { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
-        .recon-run-input {
-          background: var(--slate-800);
-          border: 1px solid var(--slate-700);
-          border-radius: 4px;
-          color: var(--white);
-          font-size: 0.82rem;
-          font-family: 'IBM Plex Mono', monospace;
-          padding: 0.4rem 0.7rem;
-          width: 200px;
-          outline: none;
-          transition: border-color 0.15s;
-        }
-        .recon-run-input:focus { border-color: var(--amber-400); }
-        .recon-run-input:disabled { opacity: 0.5; cursor: not-allowed; }
-        .recon-run-input::placeholder { color: var(--slate-600); }
-      `}</style>
+    <table className="pl-table">
+      <thead>
+        <tr>
+          <th>Check</th>
+          <th style={{ textAlign: "right" }}>Left</th>
+          <th style={{ textAlign: "right" }}>Right</th>
+          <th style={{ textAlign: "right" }}>Difference</th>
+          <th style={{ width: 110 }}>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.tieOuts.map((t) => (
+          <tr key={t.key} className={rowClass(t.status.tone)}>
+            <td>
+              {t.check}
+              {t.explanation ? (
+                <div className="finding-meta">{t.explanation}</div>
+              ) : null}
+              {t.reason ? (
+                <div className="finding-meta">Skipped: {t.reason}</div>
+              ) : null}
+            </td>
+            <td className="num">
+              {t.left == null ? "—" : amount(t.left, data.currency)}
+              {t.leftLabel ? <div className="finding-meta">{t.leftLabel}</div> : null}
+            </td>
+            <td className="num">
+              {t.right == null ? "—" : amount(t.right, data.currency)}
+              {t.rightLabel ? <div className="finding-meta">{t.rightLabel}</div> : null}
+            </td>
+            <td className="num">
+              <span className={`deviation ${t.driftsApart ? "up" : ""}`}>
+                {t.hasDifference ? amount(t.difference, data.currency) : "—"}
+              </span>
+            </td>
+            <td>
+              <span className={`badge ${t.status.badge}`}>{t.status.text}</span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
-      <div className="page">
+function ExceptionsTab({ data }) {
+  if (data.exceptions.length === 0) {
+    return (
+      <div className="empty-state">
+        No exceptions raised on this run
+        {data.skipped.length
+          ? ` — though ${data.skipped.length} check${
+              data.skipped.length === 1 ? " was" : "s were"
+            } skipped.`
+          : "."}
+      </div>
+    );
+  }
 
-        {/* ── Run bar ─────────────────────────────────────── */}
-        <div className="period-filter-bar">
+  return (
+    <table className="pl-table">
+      <thead>
+        <tr>
+          <th>Exception</th>
+          <th style={{ textAlign: "right" }}>Difference</th>
+          <th>Detail</th>
+          <th style={{ width: 110 }}>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.exceptions.map((e) => (
+          <tr key={e.key} className={rowClass(e.status.tone)}>
+            <td>{e.title}</td>
+            <td className="num">
+              {e.difference == null ? "—" : amount(e.difference, data.currency)}
+            </td>
+            <td>{e.detail || "No detail supplied by the reconciliation agent."}</td>
+            <td>
+              <span className={`badge ${e.status.badge}`}>{e.status.text}</span>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function NarrativeTab({ data }) {
+  if (data.narrative.length === 0) {
+    return <div className="empty-state">This run returned no narrative.</div>;
+  }
+  return (
+    <div style={{ padding: "1.5rem", maxWidth: "70ch" }}>
+      {data.narrative.map((para, i) => (
+        <p key={i} style={{ marginBottom: "1rem", lineHeight: 1.6 }}>
+          {para}
+        </p>
+      ))}
+      {data.modelId ? (
+        <div className="finding-meta" style={{ marginTop: "1.5rem" }}>
+          Written by {data.agent ?? "the reconciliation agent"} · {data.modelId}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ────────────────────────── page ────────────────────────── */
+
+export default function Reconciliation({
+  endpoint = DEFAULT_ENDPOINT,
+  apiKey = "",
+  initialYear = "2026",
+  initialQuarter = "Q4",
+  currency = "MYR",
+  autoRun = true,
+}) {
+  const [year, setYear] = useState(initialYear);
+  const [quarter, setQuarter] = useState(initialQuarter);
+  const [tab, setTab] = useState("summary");
+  const [data, setData] = useState(null);
+  const [status, setStatus] = useState("idle"); // idle | loading | ready | error
+  const [error, setError] = useState("");
+  const abortRef = useRef(null);
+
+  // Display only — the Lambda builds this prefix itself from the two fields.
+  const runId = useMemo(() => `${year}-${quarter}`, [year, quarter]);
+
+  const fetchReconciliation = useCallback(
+    async (financialYear, qtr) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setStatus("loading");
+      setError("");
+
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(apiKey ? { "x-api-key": apiKey } : {}),
+          },
+          body: JSON.stringify({
+            financial_year: financialYear,
+            quarter: qtr,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          let detail = "";
+          try {
+            const body = await res.json();
+            detail =
+              typeof body === "string"
+                ? body
+                : body?.body ?? body?.message ?? body?.error ?? "";
+          } catch {
+            /* non-JSON error body */
+          }
+          throw new Error(
+            (typeof detail === "string" && detail) ||
+              `Request failed with status ${res.status}.`
+          );
+        }
+
+        const record = unwrapRecord(await res.json());
+        setData(normalizeReconciliation(record, currency));
+        setStatus("ready");
+      } catch (err) {
+        if (err.name === "AbortError") return;
+        setError(err.message || "Could not reach the audit service.");
+        setStatus("error");
+      }
+    },
+    [endpoint, apiKey, currency]
+  );
+
+  useEffect(() => {
+    if (autoRun) fetchReconciliation(initialYear, initialQuarter);
+    return () => abortRef.current?.abort();
+    // Runs once on mount; later refreshes come from the Run button.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const periodLabel = `${quarter} ${year}`;
+  const failCount = (data?.counts.alert ?? 0) + (data?.exceptions.length ?? 0);
+  const skipCount = data?.counts.warn ?? 0;
+
+  const headerBadge = !data
+    ? null
+    : failCount > 0
+    ? { cls: "badge-red", text: `${failCount} exception${failCount === 1 ? "" : "s"}` }
+    : skipCount > 0
+    ? { cls: "badge-amber", text: `${skipCount} skipped` }
+    : { cls: "badge-green", text: "All checks passed" };
+
+  return (
+    <div className="page">
+      {/* period filter */}
+      <div className="period-filter-bar">
+        <div className="period-filter-fields">
           <div className="period-filter-group">
-            <span className="period-filter-label">Run ID</span>
-            <input
-              className="recon-run-input"
-              type="text"
-              value={runId}
-              onChange={e => setRunId(e.target.value)}
-              onKeyDown={handleKey}
-              placeholder="e.g. 2026-Q1"
-              disabled={loading}
-              aria-label="Run ID"
-            />
+            <label className="period-filter-label" htmlFor="rec-year">
+              Financial year
+            </label>
+            <select
+              id="rec-year"
+              className="period-filter-select"
+              value={year}
+              onChange={(e) => setYear(e.target.value)}
+            >
+              {YEARS.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <button
-            className="btn-compile period-filter-run"
-            onClick={runAnalysis}
-            disabled={loading || !runId.trim()}
-            style={{ opacity: (loading || !runId.trim()) ? 0.5 : 1, cursor: (loading || !runId.trim()) ? 'not-allowed' : 'pointer' }}
-          >
-            {loading ? (
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{
-                  display: 'inline-block', width: 13, height: 13,
-                  border: '2px solid rgba(10,15,26,0.3)',
-                  borderTopColor: 'var(--slate-950)',
-                  borderRadius: '50%', animation: 'auditShimmer 0.7s linear infinite',
-                  // override shimmer for spinner
-                  backgroundImage: 'none', background: 'none',
-                  animationName: 'spin__recon',
-                }} />
-                Analysing…
-                <style>{`@keyframes spin__recon { to { transform: rotate(360deg); } }`}</style>
-              </span>
-            ) : '▶ Run Analysis'}
-          </button>
-
-          {/* Spacer */}
-          <div style={{ flex: 1 }} />
-
-          {/* Raw JSON toggle — visible once we have a result */}
-          {result && !loading && (
-            <button
-              className="run-details-btn"
-              onClick={() => setShowRaw(v => !v)}
+          <div className="period-filter-group">
+            <label className="period-filter-label" htmlFor="rec-quarter">
+              Quarter
+            </label>
+            <select
+              id="rec-quarter"
+              className="period-filter-select"
+              value={quarter}
+              onChange={(e) => setQuarter(e.target.value)}
             >
-              {showRaw ? 'Hide raw JSON' : 'View raw JSON'}
-            </button>
-          )}
+              {QUARTERS.map((q) => (
+                <option key={q} value={q}>
+                  {q}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        {/* ── Error banner ─────────────────────────────────── */}
-        {error && (
-          <div style={{ padding: '0 2rem' }}>
-            <div className="run-error-banner" style={{ marginTop: '1.5rem' }}>
-              <strong>Agent returned an error —</strong> {error}
-            </div>
-          </div>
-        )}
+        <button
+          type="button"
+          className="btn-primary period-filter-run"
+          onClick={() => fetchReconciliation(year, quarter)}
+          disabled={status === "loading"}
+        >
+          {status === "loading" ? "Running…" : "Run"}
+        </button>
 
-        {/* ── Raw JSON panel ───────────────────────────────── */}
-        {showRaw && _raw && (
-          <div style={{ padding: '1rem 2rem 0' }}>
-            <div
-              className="module-card"
-              style={{
-                fontFamily: "'IBM Plex Mono', monospace",
-                fontSize: '0.75rem',
-                color: 'var(--slate-400)',
-                padding: '1.25rem',
-                whiteSpace: 'pre',
-                overflowX: 'auto',
-                maxHeight: 360,
-                overflowY: 'auto',
-                lineHeight: 1.6,
-              }}
+        <span className="run-card-id">run_id: {runId}</span>
+      </div>
+
+      {/* header */}
+      <div className="page-header">
+        <div>
+          <h2>Reconciliation &amp; Tie-Out</h2>
+          <div className="sub">
+            {periodLabel} · Statement tie-outs, exceptions &amp; auditor narrative
+          </div>
+        </div>
+
+        {status === "ready" && headerBadge ? (
+          <div className="header-actions">
+            <span className={`badge ${headerBadge.cls}`}>{headerBadge.text}</span>
+          </div>
+        ) : null}
+      </div>
+
+      {status === "ready" && data && (
+        <div className="tab-bar">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`tab ${tab === t.id ? "active" : ""}`}
+              onClick={() => setTab(t.id)}
             >
-              {JSON.stringify(_raw, null, 2)}
+              {t.label}
+              {t.id === "exceptions" && data.exceptions.length > 0
+                ? ` (${data.exceptions.length})`
+                : ""}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* body */}
+      <div className="dashboard-body">
+        {status === "loading" && (
+          <div className="empty-state">Pulling {runId} from the audit service…</div>
+        )}
+
+        {status === "error" && (
+          <div className="module-card">
+            <div className="module-card-body">
+              <div className="run-error-banner">{error}</div>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ marginTop: "1rem" }}
+                onClick={() => fetchReconciliation(year, quarter)}
+              >
+                Try again
+              </button>
             </div>
           </div>
         )}
 
-        {/* ── Loading skeleton ──────────────────────────────── */}
-        {loading && <LoadingState />}
-
-        {/* ── Empty state ───────────────────────────────────── */}
-        {!loading && !result && !error && (
-          <div className="empty-state" style={{ paddingTop: '5rem' }}>
-            <div style={{ fontSize: '2.5rem', marginBottom: '1rem', opacity: 0.3 }}>⚖️</div>
-            <div style={{ color: 'var(--slate-300)', fontWeight: 600, marginBottom: '0.5rem' }}>
-              No audit results yet
-            </div>
-            <div>
-              Enter a Run ID above and click{' '}
-              <strong style={{ color: 'var(--amber-400)' }}>Run Analysis</strong>{' '}
-              to kick off the reconciliation agent.
-            </div>
+        {status === "idle" && (
+          <div className="run-empty-state">
+            <p>Pick a period and select Run to load the reconciliation.</p>
           </div>
         )}
 
-        {/* ── Results ───────────────────────────────────────── */}
-        {!loading && result && (
-          <>
-            {/* Page header */}
-            <div className="page-header">
-              <div>
-                <h2>Reconciliation</h2>
-                <div className="sub mono">
-                  run_id: {result.run_id} · Cross-document tie-out audit
-                </div>
-              </div>
-              <div className="header-actions">
-                {passed  > 0 && <span className="badge badge-green">{passed} Passed</span>}
-                {skipped > 0 && <span className="badge badge-amber">{skipped} Skipped</span>}
-                {failed  > 0 && <span className="badge badge-red">{failed} Failed</span>}
-              </div>
+        {status === "ready" && data && (
+          <div className="module-card">
+            <div className="module-card-header">
+              <span className="module-card-title">
+                {TABS.find((t) => t.id === tab).label} — {periodLabel}
+              </span>
+              <span className="run-card-id">
+                {data.recordId ?? data.runId}
+                {data.generatedAt ? ` · ${timestamp(data.generatedAt)}` : ""}
+                {data.materiality != null
+                  ? ` · materiality ${amount(data.materiality, data.currency)}`
+                  : ""}
+              </span>
             </div>
 
-            <div className="dashboard-body">
-
-              {/* ── KPI row ────────────────────────────────── */}
-              <div className="kpi-row">
-                <KpiCard label="Total checks"  value={total}   variant="neutral" />
-                <KpiCard label="Passed"         value={passed}  variant="ok"      />
-                <KpiCard label="Skipped"        value={skipped} variant="warn"    />
-                <KpiCard label="Overall status" value={status ?? '—'} variant={overallVariant} mono />
-              </div>
-
-              {/* ── Tie-out checks ─────────────────────────── */}
-              {checks.length > 0 && (
-                <>
-                  <div style={{
-                    fontSize: '0.72rem', textTransform: 'uppercase',
-                    letterSpacing: '0.08em', color: 'var(--slate-400)',
-                    fontWeight: 500,
-                  }}>
-                    Tie-out checks
-                  </div>
-                  <div className="recon-flow">
-                    {checks.map((check, i) => (
-                      <CheckRow key={check.id ?? check.check_id ?? i} check={check} />
-                    ))}
-                  </div>
-                </>
-              )}
-
-              {/* ── AI narrative ───────────────────────────── */}
-              {narrative && (
-                <>
-                  <div style={{
-                    fontSize: '0.72rem', textTransform: 'uppercase',
-                    letterSpacing: '0.08em', color: 'var(--slate-400)',
-                    fontWeight: 500,
-                  }}>
-                    AI reasoning
-                  </div>
-                  <div className="module-card">
-                    <div className="module-card-header">
-                      <div className="module-card-title">
-                        {/* Status dot */}
-                        <span style={{
-                          width: 8, height: 8, borderRadius: '50%',
-                          background: status === 'FAIL' ? 'var(--red-500)' : 'var(--green-500)',
-                          display: 'inline-block',
-                        }} />
-                        Reconciliation narrative
-                        <span className={`badge ${
-                          status === 'PASS' ? 'badge-green' :
-                          status === 'FAIL' ? 'badge-red'   : 'badge-amber'
-                        }`}>
-                          {status ?? 'UNKNOWN'}
-                        </span>
-                      </div>
-                      {model && (
-                        <span className="mono" style={{ fontSize: '0.68rem', color: 'var(--slate-500)' }}>
-                          {model}
-                        </span>
-                      )}
-                    </div>
-                    <div className="module-card-body">
-                      {/* Split narrative on blank lines into paragraphs */}
-                      {narrative.split(/\n{2,}/).filter(Boolean).map((para, i) => (
-                        <p key={i} style={{ marginBottom: '0.9rem', lineHeight: 1.75, fontSize: '0.85rem', color: 'var(--slate-300)' }}>
-                          {para.trim()}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* ── Compile / next-step bar ─────────────────── */}
-              {status === 'PASS' && (
-                <div className="compile-bar">
-                  <div className="compile-info">
-                    <h4>Reconciliation complete</h4>
-                    <p>All tie-out checks passed. You can now generate the final audit report.</p>
-                  </div>
-                  <button className="btn-compile">Generate Audit Report →</button>
-                </div>
-              )}
-
-              {/* Timestamp footer */}
-              {generatedAt && (
-                <div className="mono" style={{ fontSize: '0.68rem', color: 'var(--slate-600)', textAlign: 'right' }}>
-                  Generated {new Date(generatedAt).toLocaleString(undefined, {
-                    dateStyle: 'medium', timeStyle: 'short',
-                  })}
-                </div>
-              )}
-
-            </div>
-          </>
+            {tab === "summary" && <SummaryTab data={data} />}
+            {tab === "tieouts" && <TieOutsTab data={data} />}
+            {tab === "exceptions" && <ExceptionsTab data={data} />}
+            {tab === "narrative" && <NarrativeTab data={data} />}
+          </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

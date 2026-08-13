@@ -2,9 +2,10 @@
 
 /**
  * SummaryPage — every number on this page comes from one call to the
- * FinSight lookup agent. No mock data, no layout or class-name changes.
+ * FinSight lookup agent. Layout and class names are unchanged.
  *
- *   GET  https://.../default/finsight-upload-lookup-agent?run_id=2026-Q4
+ *   POST https://.../default/finsight-upload-lookup-agent
+ *   body { "financial_year": "2026", "quarter": "Q4" }
  *   200  { statusCode, body: { pnl_output, balance_sheet_output,
  *          ledger_output, reconciliation_output, extraction_summary, ... } }
  *
@@ -21,373 +22,394 @@ import PeriodSelector, { FINANCIAL_YEARS } from "./PeriodSelector";
 const API_URL =
   "https://j2aac6i6f0.execute-api.ap-southeast-1.amazonaws.com/default/finsight-upload-lookup-agent";
 
-function periodValue(p) {
-  if (p == null) return "";
-  if (typeof p === "string" || typeof p === "number") return String(p);
-  return String(p.value ?? p.id ?? p.label ?? p.name ?? "");
-}
+const QUARTERS = ["Q1", "Q2", "Q3", "Q4"];
 
-/** Builds the DynamoDB partition key format the agent stores runs under: "2026-Q4". */
-function buildRunId(financialYear, quarter) {
-  const raw = periodValue(financialYear);
-  const full = raw.match(/(20\d{2})/);
-  const short = raw.match(/(\d{2})(?!.*\d)/);
-  const year = full ? full[1] : short ? `20${short[1]}` : raw;
+/** Lambda wants "2026" — tolerate "FY2026", "FY26/27", etc. */
+const toApiYear = (fy) =>
+  (String(fy ?? "").match(/\d{4}/) || [String(fy ?? "")])[0];
 
-  const q = periodValue(quarter).toLowerCase();
-  if (!q || q === "all") return year;
-  const qn = q.match(/[1-4]/);
-  return qn ? `${year}-Q${qn[0]}` : year;
-}
+/** Lambda wants "Q4" — tolerate "q4", "4", "Quarter 4". */
+const toApiQuarter = (q) => {
+  const m = String(q ?? "").match(/[1-4]/);
+  return m ? `Q${m[0]}` : String(q ?? "").toUpperCase();
+};
 
-/** Lambda proxy responses nest (and often stringify) the payload. Unwrap up to 3 layers. */
+const isAllQuarters = (q) => String(q ?? "").toLowerCase() === "all";
+
+/**
+ * The Lambda returns { statusCode, body }. Depending on whether the route is a
+ * proxy integration, `body` arrives as an object or as a JSON string, and the
+ * envelope is sometimes unwrapped by the gateway. Handle all three shapes.
+ */
 function unwrapPayload(raw) {
-  let payload = raw;
-  for (let i = 0; i < 3; i += 1) {
-    if (typeof payload === "string") {
-      try {
-        payload = JSON.parse(payload);
-      } catch {
-        return null;
-      }
-      continue;
+  let data = raw;
+
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      throw new Error(data.slice(0, 200) || "Empty response from the lookup agent.");
     }
-    if (payload && typeof payload === "object" && "body" in payload) {
-      payload = payload.body;
-      continue;
-    }
-    if (payload && typeof payload === "object" && "Item" in payload) {
-      payload = payload.Item;
-      continue;
-    }
-    break;
   }
-  return payload && typeof payload === "object" ? payload : null;
+
+  if (data && typeof data === "object" && "body" in data) {
+    let body = data.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        /* body is a plain message, e.g. the 404 text */
+      }
+    }
+    const code = Number(data.statusCode ?? 200);
+    if (code !== 200) {
+      throw new Error(
+        typeof body === "string" ? body : `Lookup returned ${code}.`
+      );
+    }
+    return body;
+  }
+
+  return data;
 }
 
-async function fetchAuditRun({ runId, financialYear, quarter, signal }) {
-  const url = new URL(API_URL);
-  url.searchParams.set("run_id", runId);
-  url.searchParams.set("financial_year", periodValue(financialYear));
-  url.searchParams.set("quarter", periodValue(quarter));
+async function fetchRun(financialYear, quarter, signal) {
+  const payload = {
+    financial_year: toApiYear(financialYear),
+    quarter: toApiQuarter(quarter),
+  };
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: { Accept: "application/json" },
+  let res = await fetch(API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
     signal,
   });
 
-  if (res.status === 404) return null;
+  // If the route is wired for GET only, retry with query params.
+  if (!res.ok && [403, 404, 405].includes(res.status)) {
+    res = await fetch(`${API_URL}?${new URLSearchParams(payload)}`, { signal });
+  }
+
+  const text = await res.text();
   if (!res.ok) {
+    throw new Error(`Lookup failed (${res.status}). ${text.slice(0, 160)}`);
+  }
+  return unwrapPayload(text);
+}
+
+/** quarter === "all" → fan out across Q1–Q4 and keep the newest run. */
+async function fetchPeriod(financialYear, quarter, signal) {
+  if (!isAllQuarters(quarter)) {
+    return fetchRun(financialYear, quarter, signal);
+  }
+
+  const settled = await Promise.allSettled(
+    QUARTERS.map((q) => fetchRun(financialYear, q, signal))
+  );
+
+  const runs = settled
+    .filter(
+      (s) => s.status === "fulfilled" && s.value && typeof s.value === "object"
+    )
+    .map((s) => s.value);
+
+  if (!runs.length) {
     throw new Error(
-      `The lookup agent returned ${res.status}. Check the run_id and that CORS is enabled on the endpoint.`
+      `No completed runs found for ${toApiYear(
+        financialYear
+      )}. Pick a specific quarter, or upload documents and run the pipeline first.`
     );
   }
 
-  const payload = unwrapPayload(await res.json());
-  if (!payload) throw new Error("The response was not valid JSON.");
-  return payload;
+  return runs.reduce((a, b) =>
+    String(b.completed_at ?? "") > String(a.completed_at ?? "") ? b : a
+  );
 }
 
 /* ------------------------------------------------------------------ *
- * Derivation
+ * Formatting
  * ------------------------------------------------------------------ */
 
-const MODULES = ["pl", "balance", "receipts", "recon"];
-
-const MODULE_LABEL = {
-  pl: "P&L ANALYSIS",
-  balance: "BALANCE SHEET",
-  receipts: "RECEIPTS",
-  recon: "RECONCILIATION",
+const toNum = (v) => {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const n = parseFloat(String(v ?? "").replace(/,/g, ""));
+  return Number.isFinite(n) ? n : 0;
 };
 
-const MODULE_TILE = {
-  pl: "P&L Analysis",
-  balance: "Balance Sheet",
-  receipts: "Receipts",
-  recon: "Reconciliation",
-};
-
-const BAR_LABEL = { pl: "P&L", balance: "Balance", receipts: "Receipts", recon: "Recon" };
-
-/** Routes a tie-out check name to the module that owns it. */
-const CHECK_ROUTES = [
-  [/receipt|invoice|duplicate/i, "receipts"],
-  [/balance_sheet|cash_agrees|retained_earnings/i, "balance"],
-  [/pnl|revenue_ties|expenses_tie|gross_profit/i, "pl"],
-];
-
-function moduleForCheck(name = "") {
-  for (const [re, mod] of CHECK_ROUTES) if (re.test(name)) return mod;
-  return "recon";
-}
-
-function num(v) {
-  if (v === null || v === undefined || v === "") return null;
-  const n = typeof v === "number" ? v : parseFloat(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function money(v, currency = "") {
-  const n = num(v);
-  if (n === null) return "—";
-  const body = Math.abs(n).toLocaleString(undefined, {
+const money = (v, ccy) =>
+  `${ccy ? ccy + " " : ""}${toNum(v).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  });
-  return `${n < 0 ? "-" : ""}${currency ? `${currency} ` : ""}${body}`;
-}
+  })}`;
 
-function titleise(s = "") {
-  return String(s).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
+const titleise = (s) =>
+  String(s ?? "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 
-function timeAgo(iso) {
+function relTime(iso) {
+  if (!iso) return "—";
   const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "just now";
-  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (Number.isNaN(t)) return String(iso);
+  const mins = Math.round((Date.now() - t) / 60000);
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins} min ago`;
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs} hr ago`;
-  return `${Math.round(hrs / 24)} d ago`;
+  const days = Math.round(hrs / 24);
+  return `${days} day${days > 1 ? "s" : ""} ago`;
 }
 
-function shortModel(id) {
-  if (!id) return "—";
-  const m = String(id).match(/(claude[\w-]*?)-\d{8}/i);
-  return m ? m[1] : id;
-}
+const clamp = (n, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, Math.round(n)));
 
-const SEVERITY_RANK = { alert: 0, warn: 1, ok: 2 };
+const tone = (v) => (v >= 90 ? "green" : v >= 70 ? "amber" : "red");
 
-function derive(data) {
-  const pnl = data.pnl_output || {};
-  const bsOut = data.balance_sheet_output || {};
-  const bs = bsOut.balance_sheet || {};
-  const ledger = data.ledger_output || {};
-  const recon = data.reconciliation_output || {};
-  const extraction = data.extraction_summary || {};
+/* ------------------------------------------------------------------ *
+ * Derive everything the dashboard shows from one run record
+ * ------------------------------------------------------------------ */
 
-  const currency = pnl.currency || ledger.currency || extraction.currency || "";
-  const asOf = recon.generated_at || data.completed_at;
+function deriveAudit(run) {
+  const pnl = run?.pnl_output ?? {};
+  const bs = run?.balance_sheet_output?.balance_sheet ?? {};
+  const ledger = run?.ledger_output ?? {};
+  const tb = ledger.trial_balance ?? {};
+  const rec = run?.reconciliation_output ?? {};
+  const ext = run?.extraction_summary ?? {};
 
-  const tieOuts = Array.isArray(recon.tie_outs) ? recon.tie_outs : [];
-  const exceptions = Array.isArray(recon.exceptions) ? recon.exceptions : [];
-  const ledgerErrors = Array.isArray(ledger.errors) ? ledger.errors : [];
-  const reviewReasons = Array.isArray(extraction.review_reasons)
-    ? extraction.review_reasons
-    : [];
-  const duplicateUpload = extraction.duplicate_upload === true;
+  const currency = ext.currency || ledger.currency || "";
+  const runAge = relTime(run?.completed_at);
 
+  const tieOuts = Array.isArray(rec.tie_outs) ? rec.tie_outs : [];
   const passed = tieOuts.filter((t) => t.status === "PASS");
-  const failed = tieOuts.filter((t) => t.status === "FAIL");
+  const failed = tieOuts.filter((t) =>
+    ["FAIL", "EXCEPTION", "ERROR"].includes(t.status)
+  );
   const skipped = tieOuts.filter((t) => t.status === "SKIPPED");
+  const exceptions = Array.isArray(rec.exceptions) ? rec.exceptions : [];
+  const reviewReasons = Array.isArray(ext.review_reasons)
+    ? ext.review_reasons
+    : [];
+  const duplicateUpload = Boolean(ext.duplicate_upload);
+  const isBalanced =
+    bs.is_balanced === true || String(bs.is_balanced) === "true";
+  const bankRec = rec.reconciliation ?? {};
+  const bankRecSkipped =
+    String(bankRec.status ?? "").toUpperCase() === "SKIPPED";
 
-  const bankRecon = recon.reconciliation || null;
-  const bankReconSkipped = Boolean(bankRecon && bankRecon.status === "SKIPPED");
+  // The P&L agent and the reconciliation agent must agree on net income.
+  // If they don't, the tie-out ran against a different ledger snapshot.
+  const pnlCheck = tieOuts.find((t) => t.check === "pnl_arithmetic");
+  const recNet = pnlCheck ? toNum(pnlCheck.right) : null;
+  const pnlNet = toNum(pnl.net_income);
+  const sourceMismatch =
+    recNet !== null && Math.abs(recNet - pnlNet) > 0.01
+      ? { recNet, pnlNet }
+      : null;
 
-  /* ---- per-module scores ---------------------------------------- */
-  const buckets = {};
-  MODULES.forEach((m) => {
-    buckets[m] = { pass: 0, fail: 0, skip: 0 };
-  });
+  /* ---- score ---- */
+  let score = 100;
+  score -= failed.length * 15;
+  score -= exceptions.length * 10;
+  score -= skipped.length * 5;
+  score -= bankRecSkipped ? 5 : 0;
+  score -= duplicateUpload ? 8 : 0;
+  score -= reviewReasons.length * 3;
+  score -= isBalanced ? 0 : 20;
+  score -= sourceMismatch ? 10 : 0;
+  score = clamp(score);
 
-  tieOuts.forEach((t) => {
-    const b = buckets[moduleForCheck(t.check)];
-    if (t.status === "PASS") b.pass += 1;
-    else if (t.status === "FAIL") b.fail += 1;
-    else b.skip += 1;
-  });
-  if (bankReconSkipped) buckets.recon.skip += 1;
-
-  const scores = {};
-  MODULES.forEach((m) => {
-    const { pass, fail, skip } = buckets[m];
-    const total = pass + fail + skip;
-    scores[m] = total ? Math.round(((pass + skip * 0.5) / total) * 100) : null;
-  });
-
-  // Receipts owns no tie-outs, so score it from extraction quality instead.
-  if (Object.keys(extraction).length === 0) {
-    scores.receipts = null;
-  } else {
-    let r = 100;
-    if (duplicateUpload) r -= 45;
-    r -= reviewReasons.length * 15;
-    if (extraction.status && extraction.status !== "normalized") r -= 20;
-    scores.receipts = Math.max(0, r);
-  }
-
-  const scored = MODULES.map((m) => scores[m]).filter((s) => s !== null);
-  const auditScore = scored.length
-    ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length)
-    : null;
-
-  /* ---- findings --------------------------------------------------- */
-  const findings = [];
-  const push = (severity, module, title, detail) =>
-    findings.push({ severity, module, title, detail });
-
-  if (duplicateUpload) {
-    push(
-      "alert",
-      "receipts",
-      "Duplicate document upload",
-      `Document ${extraction.doc_id || "—"} for ${
-        extraction.display_total || money(extraction.total_amount, currency)
-      } matches a submission already in this run. Confirm it is not counted twice.`
+  const scoreChecks = (match) => {
+    const subset = tieOuts.filter((t) => match(String(t.check ?? "")));
+    if (!subset.length) return null;
+    const pts = subset.reduce(
+      (a, t) =>
+        a + (t.status === "PASS" ? 1 : t.status === "SKIPPED" ? 0.5 : 0),
+      0
     );
-  }
+    return clamp((pts / subset.length) * 100);
+  };
 
-  reviewReasons.forEach((reason) =>
-    push(
-      "warn",
-      "receipts",
-      "Extraction flagged for review",
-      typeof reason === "string" ? reason : JSON.stringify(reason)
-    )
-  );
+  const modules = {
+    pl: clamp(
+      (scoreChecks((c) => /pnl|revenue|expense|gross_profit/.test(c)) ?? 100) -
+        (sourceMismatch ? 20 : 0)
+    ),
+    balance: clamp(
+      (scoreChecks((c) =>
+        /balance_sheet|trial_balance|cash|retained/.test(c)
+      ) ?? 100) - (isBalanced ? 0 : 40)
+    ),
+    receipts: clamp(
+      100 -
+        (duplicateUpload ? 40 : 0) -
+        reviewReasons.length * 10 -
+        (ext.status && ext.status !== "normalized" ? 20 : 0)
+    ),
+    recon: clamp(
+      (tieOuts.length ? (passed.length / tieOuts.length) * 100 : 100) -
+        (bankRecSkipped ? 15 : 0)
+    ),
+  };
 
-  ledgerErrors.forEach((err) =>
-    push(
-      "alert",
-      "recon",
-      "Ledger posting error",
-      typeof err === "string" ? err : JSON.stringify(err)
-    )
-  );
-
-  exceptions.forEach((ex) =>
-    push(
-      "alert",
-      moduleForCheck(ex.check || ex.name),
-      ex.title || titleise(ex.check || ex.name || "reconciliation_exception"),
-      ex.explanation || ex.message || ex.reason || JSON.stringify(ex)
-    )
-  );
+  /* ---- findings ---- */
+  const findings = [];
 
   failed.forEach((t) =>
-    push(
-      "alert",
-      moduleForCheck(t.check),
-      `${titleise(t.check)} failed`,
-      `${titleise(t.left_label || "left")} ${money(t.left, currency)} against ${titleise(
-        t.right_label || "right"
-      )} ${money(t.right, currency)} — difference ${money(t.difference, currency)}.`
-    )
+    findings.push({
+      level: "alert",
+      title: `${titleise(t.check)} failed`,
+      detail: `${titleise(t.left_label)} ${money(
+        t.left,
+        currency
+      )} vs ${titleise(t.right_label)} ${money(t.right, currency)} — off by ${money(
+        t.difference,
+        currency
+      )}.`,
+      meta: `RECONCILIATION · Critical · ${runAge}`,
+    })
+  );
+
+  exceptions.forEach((e) =>
+    findings.push({
+      level: "alert",
+      title: "Reconciliation exception",
+      detail:
+        typeof e === "string" ? e : e.message || e.detail || JSON.stringify(e),
+      meta: `RECONCILIATION · Critical · ${runAge}`,
+    })
+  );
+
+  if (duplicateUpload) {
+    findings.push({
+      level: "alert",
+      title: "Duplicate document submission",
+      detail: `Document ${ext.doc_id ?? "—"} (${
+        ext.display_total ?? money(ext.total_amount, currency)
+      }) matches a document already ingested for this period. Confirm it is not a re-submitted expense before approving.`,
+      meta: `RECEIPTS · Critical · ${runAge}`,
+    });
+  }
+
+  if (!isBalanced) {
+    findings.push({
+      level: "alert",
+      title: "Balance sheet does not balance",
+      detail: `Assets ${money(
+        bs.total_assets,
+        currency
+      )} vs liabilities + equity ${money(
+        toNum(bs.total_liabilities) + toNum(bs.total_equity),
+        currency
+      )} — imbalance ${money(bs.imbalance, currency)}.`,
+      meta: `BALANCE SHEET · Critical · ${runAge}`,
+    });
+  }
+
+  if (sourceMismatch) {
+    findings.push({
+      level: "warn",
+      title: "P&L and reconciliation disagree on net income",
+      detail: `The P&L agent reports ${money(
+        sourceMismatch.pnlNet,
+        currency
+      )} but the tie-out was run against ${money(
+        sourceMismatch.recNet,
+        currency
+      )}. The reconciliation is stale — re-run it against the current ledger.`,
+      meta: `RECONCILIATION · Warning · ${runAge}`,
+    });
+  }
+
+  reviewReasons.forEach((r) =>
+    findings.push({
+      level: "warn",
+      title: "Document flagged for review",
+      detail: typeof r === "string" ? r : JSON.stringify(r),
+      meta: `RECEIPTS · Warning · ${runAge}`,
+    })
   );
 
   skipped.forEach((t) =>
-    push(
-      "warn",
-      moduleForCheck(t.check),
-      `${titleise(t.check)} skipped`,
-      t.reason || t.explanation || "Required inputs were not available for this check."
-    )
+    findings.push({
+      level: "warn",
+      title: `${titleise(t.check)} could not be checked`,
+      detail:
+        t.reason || t.explanation || "Required inputs were not available.",
+      meta: `RECONCILIATION · Skipped · ${runAge}`,
+    })
   );
 
-  if (bankReconSkipped) {
-    push(
-      "warn",
-      "recon",
-      `${titleise(bankRecon.name || "bank_reconciliation")} skipped`,
-      [bankRecon.reason, bankRecon.explanation].filter(Boolean).join(" — ") ||
-        "Source documents were not supplied."
-    );
+  if (bankRecSkipped) {
+    findings.push({
+      level: "warn",
+      title: `${titleise(bankRec.name || "Bank reconciliation")} not performed`,
+      detail: `${bankRec.reason ?? "Source documents missing."} ${
+        bankRec.explanation ?? ""
+      }`.trim(),
+      meta: `RECONCILIATION · Skipped · ${runAge}`,
+    });
   }
 
-  const netIncome = num(pnl.net_income);
-  if (netIncome !== null && netIncome < 0) {
-    push(
-      "warn",
-      "pl",
-      "Net loss for the period",
-      `Revenue ${money(pnl.total_revenue, currency)} against costs ${money(
-        pnl.total_expenses ?? pnl.total_operating_expenses,
-        currency
-      )} leaves a net loss of ${money(Math.abs(netIncome), currency)}.`
-    );
-  }
-
-  if (bs.is_balanced) {
-    push(
-      "ok",
-      "balance",
-      "Balance sheet identity verified",
-      `Assets ${money(bs.total_assets, currency)} = Liabilities ${money(
+  if (isBalanced) {
+    findings.push({
+      level: "ok",
+      title: "Balance sheet identity verified",
+      detail: `Assets ${money(bs.total_assets, currency)} = Liabilities ${money(
         bs.total_liabilities,
         currency
-      )} + Equity ${money(bs.total_equity, currency)}`
-    );
-  } else if (Object.keys(bs).length) {
-    push(
-      "alert",
-      "balance",
-      "Balance sheet does not balance",
-      `Assets and liabilities plus equity differ by ${money(bs.imbalance, currency)}.`
-    );
+      )} + Equity ${money(bs.total_equity, currency)}`,
+      meta: `BALANCE SHEET · Passed · ${runAge}`,
+    });
   }
 
-  if (ledger.trial_balance && ledger.trial_balance.is_balanced) {
-    push(
-      "ok",
-      "recon",
-      "Trial balance in balance",
-      `Debits ${money(ledger.trial_balance.total_debit, currency)} equal credits ${money(
-        ledger.trial_balance.total_credit,
+  if (tb.is_balanced) {
+    findings.push({
+      level: "ok",
+      title: "Trial balance in balance",
+      detail: `Debits ${money(tb.total_debit, currency)} = Credits ${money(
+        tb.total_credit,
         currency
-      )} across ${ledger.journal_entry_count ?? "—"} journal entries.`
-    );
+      )} across ${(tb.accounts ?? []).length} accounts.`,
+      meta: `LEDGER · Passed · ${runAge}`,
+    });
   }
 
-  findings.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  const criticals = findings.filter((f) => f.level === "alert").length;
+  const warnings = findings.filter((f) => f.level === "warn").length;
 
-  /* ---- roll-ups ---------------------------------------------------- */
-  const criticalCount = findings.filter((f) => f.severity === "alert").length;
-  const warningCount = findings.filter((f) => f.severity === "warn").length;
+  const revenue = toNum(pnl.total_revenue);
+  const netMargin = revenue !== 0 ? (pnlNet / revenue) * 100 : null;
 
-  const revenue = num(pnl.total_revenue);
-  const netMargin = revenue ? (netIncome / revenue) * 100 : null;
-
-  const tileStatus = {};
-  MODULES.forEach((m) => {
-    const crit = findings.filter((f) => f.module === m && f.severity === "alert").length;
-    const warn = findings.filter((f) => f.module === m && f.severity === "warn").length;
-    if (crit) tileStatus[m] = { tone: "alert", cls: "text-red", text: `${crit} Critical` };
-    else if (warn)
-      tileStatus[m] = {
-        tone: "warn",
-        cls: "text-amber",
-        text: `${warn} ${warn === 1 ? "Warning" : "Warnings"}`,
-      };
-    else tileStatus[m] = { tone: "ok", cls: "text-green", text: "Passed" };
-  });
+  const matched = passed.length;
+  const totalChecks = tieOuts.length;
+  const reconciledPct = totalChecks
+    ? Math.round((matched / totalChecks) * 100)
+    : null;
 
   return {
     currency,
-    asOf,
-    runId: recon.run_id || pnl.run_id || data.run_id || "—",
-    pipelineStatus: data.pipeline_status,
-    modelId: recon.model_id,
-    period: pnl.period || (ledger.trial_balance && ledger.trial_balance.period),
-    pnl,
-    bs,
-    ledger,
-    narrative: recon.narrative,
-    passedCount: passed.length,
-    tieOutCount: tieOuts.length,
-    scores,
-    auditScore,
-    criticalCount,
-    warningCount,
-    flaggedCount: criticalCount + warningCount,
-    netMargin,
-    netIncome,
+    runAge,
+    score,
+    modules,
     findings,
-    tileStatus,
-    suspiciousReceipts: (duplicateUpload ? 1 : 0) + reviewReasons.length,
+    criticals,
+    warnings,
+    netMargin,
+    isBalanced,
+    suspiciousDocs: (duplicateUpload ? 1 : 0) + reviewReasons.length,
+    reconciledPct,
+    matched,
+    totalChecks,
+    narrative: rec.narrative ?? "",
+    transactionCount: pnl.transaction_count ?? null,
+    meta: {
+      runId: run?.run_id ?? rec.run_id ?? "—",
+      pipeline: run?.pipeline_status ?? "—",
+      docId: ext.doc_id ?? "—",
+      completedAt: run?.completed_at ?? null,
+      model: rec.model_id ?? "—",
+    },
   };
 }
 
@@ -399,41 +421,38 @@ export default function SummaryPage({ showPage }) {
   const [financialYear, setFinancialYear] = useState(FINANCIAL_YEARS[0]);
   const [quarter, setQuarter] = useState("all");
 
-  const [view, setView] = useState(null);
+  const [audit, setAudit] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [notFound, setNotFound] = useState(false);
-  const [showNarrative, setShowNarrative] = useState(false);
+  const [loadedPeriod, setLoadedPeriod] = useState("");
 
   const abortRef = useRef(null);
 
   const load = useCallback(async (fy, q) => {
     abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
 
     setLoading(true);
     setError(null);
-    setNotFound(false);
 
     try {
-      const payload = await fetchAuditRun({
-        runId: buildRunId(fy, q),
-        financialYear: fy,
-        quarter: q,
-        signal: controller.signal,
-      });
-      if (!payload) {
-        setNotFound(true);
-        setView(null);
-      } else {
-        setView(derive(payload));
-      }
-    } catch (err) {
-      if (err.name === "AbortError") return;
-      setError(err.message || "The run could not be loaded.");
+      const record = await fetchPeriod(fy, q, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      setAudit(deriveAudit(record));
+      setLoadedPeriod(
+        `${toApiYear(fy)} · ${isAllQuarters(q) ? "Latest quarter" : toApiQuarter(q)}`
+      );
+    } catch (e) {
+      if (e?.name === "AbortError") return;
+      setAudit(null);
+      setError(
+        String(e?.message ?? "").includes("Failed to fetch")
+          ? "Can't reach the lookup agent. Check the connection, and confirm CORS is enabled on the API Gateway route."
+          : e?.message || "Something went wrong loading this period."
+      );
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!ctrl.signal.aborted) setLoading(false);
     }
   }, []);
 
@@ -443,8 +462,7 @@ export default function SummaryPage({ showPage }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const cur = view?.currency || "";
-  const dim = { fontSize: "1rem", color: "var(--slate-400)" };
+  const a = audit;
 
   return (
     <div>
@@ -460,341 +478,379 @@ export default function SummaryPage({ showPage }) {
         <div>
           <h2>Summary Dashboard</h2>
           <div className="sub">
-            {view
-              ? `Run ${view.runId} · ${
-                  view.pipelineStatus === "success"
-                    ? "Pipeline complete"
-                    : titleise(view.pipelineStatus || "status unknown")
-                } · Last run ${timeAgo(view.asOf)}`
-              : loading
-              ? "Loading the latest run…"
-              : `Run ${buildRunId(financialYear, quarter)} · not loaded`}
+            {loading && !a
+              ? "Loading run…"
+              : a
+              ? `${loadedPeriod} · ${a.transactionCount ?? 0} transactions · Last run ${a.runAge}`
+              : "No run loaded"}
           </div>
         </div>
         <div className="header-actions">
-          {view && view.warningCount > 0 && (
+          {a && a.warnings > 0 && (
             <span className="badge badge-amber">
-              {view.warningCount} {view.warningCount === 1 ? "Warning" : "Warnings"}
+              {a.warnings} Warning{a.warnings > 1 ? "s" : ""}
             </span>
           )}
-          {view && view.criticalCount > 0 && (
-            <span className="badge badge-red">{view.criticalCount} Critical</span>
+          {a && a.criticals > 0 && (
+            <span className="badge badge-red">{a.criticals} Critical</span>
           )}
           <button
             className="btn-primary"
-            disabled={!view || loading}
-            onClick={() => showPage("recon")}
+            disabled={!a || loading}
+            onClick={() => showPage?.("recon")}
           >
             Generate Summary Report
           </button>
         </div>
       </div>
 
-      <div className="dashboard-body">
-        {error && (
-          <div className="module-card" style={{ marginBottom: "1.5rem" }}>
-            <div className="module-card-body">
-              <div className="finding-item alert">
-                <div className="finding-dot alert"></div>
-                <div>
-                  <div className="finding-text">
-                    <strong>
-                      Could not load run {buildRunId(financialYear, quarter)}
-                    </strong>
-                    <br />
-                    {error}
-                  </div>
-                  <div className="finding-meta" style={{ marginTop: "0.75rem" }}>
-                    <button
-                      className="btn-primary"
-                      onClick={() => load(financialYear, quarter)}
-                    >
-                      Try again
-                    </button>
-                  </div>
-                </div>
+      {error && (
+        <div
+          className="module-card"
+          style={{ margin: "0 0 1.5rem", borderColor: "var(--red-500, #ef4444)" }}
+        >
+          <div className="module-card-body">
+            <div style={{ fontWeight: 600, marginBottom: ".35rem" }}>
+              Couldn&apos;t load this period
+            </div>
+            <div style={{ color: "var(--slate-400)", fontSize: ".9rem" }}>
+              {error}
+            </div>
+            <button
+              className="btn-primary"
+              style={{ marginTop: "1rem" }}
+              onClick={() => load(financialYear, quarter)}
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading && !a && !error && (
+        <div className="module-card" style={{ margin: "0 0 1.5rem" }}>
+          <div className="module-card-body" style={{ color: "var(--slate-400)" }}>
+            Fetching the latest run for {toApiYear(financialYear)}
+            {isAllQuarters(quarter) ? "" : ` ${toApiQuarter(quarter)}`}…
+          </div>
+        </div>
+      )}
+
+      {a && (
+        <div className="dashboard-body" style={{ opacity: loading ? 0.55 : 1 }}>
+          {/* KPI Row */}
+          <div className="kpi-row">
+            <div className="kpi-card">
+              <div className="kpi-label">Audit Score</div>
+              <div className="kpi-value">
+                {a.score}
+                <span style={{ fontSize: "1rem", color: "var(--slate-400)" }}>
+                  /100
+                </span>
+              </div>
+              <div className="kpi-sub">
+                {a.matched} of {a.totalChecks} tie-out checks passed
+              </div>
+            </div>
+
+            <div
+              className={`kpi-card${a.warnings + a.criticals > 0 ? " warn" : ""}`}
+            >
+              <div className="kpi-label">Flagged Items</div>
+              <div className="kpi-value">{a.warnings + a.criticals}</div>
+              <div className="kpi-sub">
+                {a.warnings} warning{a.warnings === 1 ? "" : "s"} · {a.criticals}{" "}
+                critical
+              </div>
+            </div>
+
+            <div className="kpi-card">
+              <div className="kpi-label">Net Margin</div>
+              <div className="kpi-value">
+                {a.netMargin === null ? "—" : a.netMargin.toFixed(1)}
+                {a.netMargin !== null && (
+                  <span style={{ fontSize: "1rem", color: "var(--slate-400)" }}>
+                    %
+                  </span>
+                )}
+              </div>
+              <div
+                className={`kpi-sub${
+                  a.netMargin !== null && a.netMargin < 0 ? " down" : ""
+                }`}
+              >
+                {a.netMargin === null
+                  ? "No revenue booked this period"
+                  : "Net income ÷ revenue"}
+              </div>
+            </div>
+
+            <div className={`kpi-card${a.isBalanced ? "" : " alert"}`}>
+              <div className="kpi-label">Balance Check</div>
+              <div
+                className="kpi-value"
+                style={{
+                  color: a.isBalanced
+                    ? "var(--green-400)"
+                    : "var(--red-400, #f87171)",
+                  fontSize: "1.6rem",
+                }}
+              >
+                {a.isBalanced ? "✓ Balanced" : "✕ Out"}
+              </div>
+              <div className="kpi-sub">Assets = Liab + Equity</div>
+            </div>
+
+            <div className={`kpi-card${a.suspiciousDocs > 0 ? " alert" : ""}`}>
+              <div className="kpi-label">Suspicious Receipts</div>
+              <div className="kpi-value">{a.suspiciousDocs}</div>
+              <div className={`kpi-sub${a.suspiciousDocs > 0 ? " down" : ""}`}>
+                {a.suspiciousDocs > 0
+                  ? "Duplicate or flagged upload"
+                  : "Nothing flagged"}
+              </div>
+            </div>
+
+            <div className="kpi-card">
+              <div className="kpi-label">Reconciled</div>
+              <div className="kpi-value">
+                {a.reconciledPct === null ? "—" : a.reconciledPct}
+                {a.reconciledPct !== null && (
+                  <span style={{ fontSize: "1rem", color: "var(--slate-400)" }}>
+                    %
+                  </span>
+                )}
+              </div>
+              <div className="kpi-sub">
+                {a.matched} of {a.totalChecks} checks matched
               </div>
             </div>
           </div>
-        )}
 
-        {loading && !view && (
-          <div className="module-card">
-            <div className="module-card-body">
-              Fetching run {buildRunId(financialYear, quarter)} from the lookup agent…
-            </div>
-          </div>
-        )}
-
-        {notFound && !loading && (
-          <div className="module-card">
-            <div className="module-card-body">
-              No stored run for {buildRunId(financialYear, quarter)}. Upload the documents for
-              this period, or pick another period and run again.
-            </div>
-          </div>
-        )}
-
-        {view && (
-          <>
-            {/* KPI Row */}
-            <div className="kpi-row" style={loading ? { opacity: 0.55 } : undefined}>
-              <div className="kpi-card">
-                <div className="kpi-label">Audit Score</div>
-                <div className="kpi-value">
-                  {view.auditScore ?? "—"}
-                  <span style={dim}>/100</span>
-                </div>
-                <div className="kpi-sub">
-                  {view.passedCount} of {view.tieOutCount} checks passed
-                </div>
-              </div>
-
-              <div className={`kpi-card${view.flaggedCount ? " warn" : ""}`}>
-                <div className="kpi-label">Flagged Items</div>
-                <div className="kpi-value">{view.flaggedCount}</div>
-                <div className="kpi-sub">
-                  {view.warningCount} warnings · {view.criticalCount} critical
-                </div>
-              </div>
-
-              <div className="kpi-card">
-                <div className="kpi-label">Net Margin</div>
-                <div className="kpi-value">
-                  {view.netMargin === null ? "—" : view.netMargin.toFixed(1)}
-                  <span style={dim}>%</span>
-                </div>
-                <div className={`kpi-sub${view.netIncome < 0 ? " down" : " up"}`}>
-                  Net {view.netIncome < 0 ? "loss" : "income"}{" "}
-                  {money(Math.abs(view.netIncome ?? 0), cur)}
-                </div>
-              </div>
-
-              <div className={`kpi-card${view.bs.is_balanced ? "" : " alert"}`}>
-                <div className="kpi-label">Balance Check</div>
-                <div
-                  className="kpi-value"
-                  style={{
-                    color: view.bs.is_balanced ? "var(--green-400)" : undefined,
-                    fontSize: "1.6rem",
-                  }}
-                >
-                  {view.bs.is_balanced ? "✓ Balanced" : "✕ Out of balance"}
-                </div>
-                <div className="kpi-sub">
-                  {view.bs.is_balanced
-                    ? "Assets = Liab + Equity"
-                    : `Off by ${money(view.bs.imbalance, cur)}`}
-                </div>
-              </div>
-
-              <div className={`kpi-card${view.suspiciousReceipts ? " alert" : ""}`}>
-                <div className="kpi-label">Suspicious Receipts</div>
-                <div className="kpi-value">{view.suspiciousReceipts}</div>
-                <div className={`kpi-sub${view.suspiciousReceipts ? " down" : ""}`}>
-                  {view.suspiciousReceipts
-                    ? "Duplicate or review-flagged upload"
-                    : "No exceptions raised"}
-                </div>
-              </div>
-
-              <div className="kpi-card">
-                <div className="kpi-label">Reconciled</div>
-                <div className="kpi-value">
-                  {view.tieOutCount
-                    ? Math.round((view.passedCount / view.tieOutCount) * 100)
-                    : "—"}
-                  <span style={dim}>%</span>
-                </div>
-                <div className="kpi-sub">
-                  {view.passedCount} of {view.tieOutCount} tie-outs matched
-                </div>
-              </div>
-            </div>
-
-            {/* Main content area */}
-            <div className="two-col">
+          {/* Main content area */}
+          <div className="two-col">
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}
+            >
               {/* Recent Findings */}
               <div className="module-card">
                 <div className="module-card-header">
                   <div className="module-card-title">🔍 Recent Audit Findings</div>
-                  <span className="badge badge-amber">
-                    {loading ? "Refreshing" : "Live"}
-                  </span>
+                  <span className="badge badge-amber">{a.runAge}</span>
                 </div>
                 <div className="module-card-body">
-                  {view.findings.length === 0 ? (
-                    <div className="finding-item ok">
-                      <div className="finding-dot ok"></div>
+                  {a.findings.length === 0 && (
+                    <div style={{ color: "var(--slate-400)" }}>
+                      No findings raised for this period.
+                    </div>
+                  )}
+                  {a.findings.map((f, i) => (
+                    <div className={`finding-item ${f.level}`} key={i}>
+                      <div className={`finding-dot ${f.level}`}></div>
                       <div>
                         <div className="finding-text">
-                          <strong>No findings raised</strong>
+                          <strong>{f.title}</strong>
                           <br />
-                          Every check in this run completed without an exception.
+                          {f.detail}
                         </div>
-                        <div className="finding-meta">
-                          RECONCILIATION · Passed · {timeAgo(view.asOf)}
-                        </div>
+                        <div className="finding-meta">{f.meta}</div>
                       </div>
                     </div>
-                  ) : (
-                    view.findings.map((f, i) => (
-                      <div className={`finding-item ${f.severity}`} key={`${f.title}-${i}`}>
-                        <div className={`finding-dot ${f.severity}`}></div>
-                        <div>
-                          <div className="finding-text">
-                            <strong>{f.title}</strong>
-                            <br />
-                            {f.detail}
-                          </div>
-                          <div className="finding-meta">
-                            {MODULE_LABEL[f.module]} ·{" "}
-                            {f.severity === "alert"
-                              ? "Critical"
-                              : f.severity === "warn"
-                              ? "Warning"
-                              : "Passed"}{" "}
-                            · {timeAgo(view.asOf)}
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
+                  ))}
                 </div>
               </div>
 
-              {/* Right panel */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-                {/* Audit Score */}
+              {/* Auditor narrative */}
+              {a.narrative && (
                 <div className="module-card">
                   <div className="module-card-header">
-                    <div className="module-card-title">Overall Score</div>
-                  </div>
-                  <div className="score-ring-wrap">
-                    <div className="score-ring">
-                      <div className="score-inner">
-                        <span className="score-num">{view.auditScore ?? "—"}</span>
-                        <span className="score-label">/ 100</span>
-                      </div>
+                    <div className="module-card-title">
+                      Reconciliation Narrative
                     </div>
-                    <div style={{ marginTop: "1rem", width: "100%" }}>
-                      <div className="bar-chart">
-                        {MODULES.map((m) => {
-                          const s = view.scores[m];
-                          const fill = s === null ? 0 : s;
-                          const tone = fill >= 90 ? "green" : fill >= 70 ? "amber" : "red";
-                          return (
-                            <div className="bar-row" key={m}>
-                              <div className="bar-label">{BAR_LABEL[m]}</div>
-                              <div className="bar-track">
-                                <div
-                                  className={`bar-fill ${tone}`}
-                                  style={{ width: `${fill}%` }}
-                                ></div>
-                              </div>
-                              <div className="bar-value">{s === null ? "—" : s}</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Module Status */}
-                <div className="module-card">
-                  <div className="module-card-header">
-                    <div className="module-card-title">Module Status</div>
                   </div>
                   <div className="module-card-body">
-                    <div className="module-status-grid">
-                      {MODULES.map((m) => {
-                        const st = view.tileStatus[m];
-                        const extra =
-                          st.tone === "alert" ? " alert" : st.tone === "warn" ? " warn" : "";
-                        return (
-                          <div
-                            className={`status-tile${extra}`}
-                            key={m}
-                            onClick={() => showPage(m)}
-                          >
-                            <div className="status-tile-name">{MODULE_TILE[m]}</div>
-                            <div className={`status-tile-status ${st.cls}`}>{st.text}</div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    {a.narrative
+                      .split(/\n\s*\n/)
+                      .filter((p) => p.trim())
+                      .map((p, i) => (
+                        <p
+                          key={i}
+                          style={{
+                            margin: i === 0 ? 0 : ".85rem 0 0",
+                            lineHeight: 1.65,
+                            fontSize: ".92rem",
+                            color: "var(--slate-300, #cbd5e1)",
+                          }}
+                        >
+                          {p.trim()}
+                        </p>
+                      ))}
                   </div>
                 </div>
+              )}
+            </div>
 
-                {/* Run details */}
-                <div className="module-card">
-                  <div className="module-card-header">
-                    <div className="module-card-title">Run Details</div>
+            {/* Right panel */}
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}
+            >
+              {/* Audit Score */}
+              <div className="module-card">
+                <div className="module-card-header">
+                  <div className="module-card-title">Overall Score</div>
+                </div>
+                <div className="score-ring-wrap">
+                  <div
+                    className="score-ring"
+                    style={{
+                      background: `conic-gradient(var(--${
+                        tone(a.score) === "green"
+                          ? "green-400, #4ade80"
+                          : tone(a.score) === "amber"
+                          ? "amber-400, #fbbf24"
+                          : "red-400, #f87171"
+                      }) ${a.score * 3.6}deg, var(--slate-800, #1e293b) 0deg)`,
+                    }}
+                  >
+                    <div className="score-inner">
+                      <span className="score-num">{a.score}</span>
+                      <span className="score-label">/ 100</span>
+                    </div>
                   </div>
-                  <div className="module-card-body">
+                  <div style={{ marginTop: "1rem", width: "100%" }}>
                     <div className="bar-chart">
-                      <RunDetail label="Run ID" value={view.runId} />
-                      <RunDetail label="Currency" value={cur || "—"} />
-                      <RunDetail
-                        label="Period"
-                        value={
-                          view.period ? `${view.period.start} → ${view.period.end}` : "—"
-                        }
-                      />
-                      <RunDetail
-                        label="Entries"
-                        value={`${view.ledger.journal_entry_count ?? "—"} journal · ${
-                          view.pnl.transaction_count ?? "—"
-                        } txns`}
-                      />
-                      <RunDetail label="Model" value={shortModel(view.modelId)} />
+                      {[
+                        ["P&L", a.modules.pl],
+                        ["Balance", a.modules.balance],
+                        ["Receipts", a.modules.receipts],
+                        ["Recon", a.modules.recon],
+                      ].map(([label, value]) => (
+                        <div className="bar-row" key={label}>
+                          <div className="bar-label">{label}</div>
+                          <div className="bar-track">
+                            <div
+                              className={`bar-fill ${tone(value)}`}
+                              style={{ width: `${value}%` }}
+                            ></div>
+                          </div>
+                          <div className="bar-value">{value}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Module Status */}
+              <div className="module-card">
+                <div className="module-card-header">
+                  <div className="module-card-title">Module Status</div>
+                </div>
+                <div className="module-card-body">
+                  <div className="module-status-grid">
+                    <div className="status-tile" onClick={() => showPage?.("pl")}>
+                      <div className="status-tile-name">P&amp;L Analysis</div>
+                      <div className={`status-tile-status text-${tone(a.modules.pl)}`}>
+                        {a.modules.pl >= 90 ? "Passed" : `Score ${a.modules.pl}`}
+                      </div>
+                    </div>
+
+                    <div
+                      className="status-tile"
+                      onClick={() => showPage?.("balance")}
+                    >
+                      <div className="status-tile-name">Balance Sheet</div>
+                      <div
+                        className={`status-tile-status ${
+                          a.isBalanced ? "text-green" : "text-red"
+                        }`}
+                      >
+                        {a.isBalanced ? "Passed" : "Out of balance"}
+                      </div>
+                    </div>
+
+                    <div
+                      className={`status-tile${a.suspiciousDocs > 0 ? " alert" : ""}`}
+                      onClick={() => showPage?.("receipts")}
+                    >
+                      <div className="status-tile-name">Receipts</div>
+                      <div
+                        className={`status-tile-status ${
+                          a.suspiciousDocs > 0 ? "text-red" : "text-green"
+                        }`}
+                      >
+                        {a.suspiciousDocs > 0
+                          ? `${a.suspiciousDocs} Flagged`
+                          : "Passed"}
+                      </div>
+                    </div>
+
+                    <div
+                      className={`status-tile${a.modules.recon < 90 ? " warn" : ""}`}
+                      onClick={() => showPage?.("recon")}
+                    >
+                      <div className="status-tile-name">Reconciliation</div>
+                      <div
+                        className={`status-tile-status text-${tone(a.modules.recon)}`}
+                      >
+                        {a.totalChecks - a.matched > 0
+                          ? `${a.totalChecks - a.matched} Gap${
+                              a.totalChecks - a.matched > 1 ? "s" : ""
+                            }`
+                          : "Passed"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Run details */}
+              <div className="module-card">
+                <div className="module-card-header">
+                  <div className="module-card-title">Run Details</div>
+                </div>
+                <div className="module-card-body">
+                  {[
+                    ["Run ID", a.meta.runId],
+                    ["Pipeline", a.meta.pipeline],
+                    ["Document", a.meta.docId],
+                    ["Currency", a.currency || "—"],
+                    [
+                      "Completed",
+                      a.meta.completedAt
+                        ? new Date(a.meta.completedAt).toLocaleString()
+                        : "—",
+                    ],
+                    ["Model", a.meta.model],
+                  ].map(([k, v]) => (
+                    <div
+                      key={k}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: "1rem",
+                        padding: ".4rem 0",
+                        fontSize: ".82rem",
+                      }}
+                    >
+                      <span style={{ color: "var(--slate-400)" }}>{k}</span>
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono, ui-monospace, monospace)",
+                          textAlign: "right",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {String(v)}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
-
-            {/* Narrative */}
-            {view.narrative && (
-              <div className="module-card" style={{ marginTop: "1.5rem" }}>
-                <div className="module-card-header">
-                  <div className="module-card-title">Reconciliation Narrative</div>
-                  <button className="btn-primary" onClick={() => setShowNarrative((s) => !s)}>
-                    {showNarrative ? "Show less" : "Read full narrative"}
-                  </button>
-                </div>
-                <div className="module-card-body">
-                  <div
-                    className="finding-text"
-                    style={{
-                      whiteSpace: "pre-line",
-                      maxHeight: showNarrative ? "none" : "5.5em",
-                      overflow: "hidden",
-                    }}
-                  >
-                    {view.narrative}
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RunDetail({ label, value }) {
-  return (
-    <div className="bar-row">
-      <div className="bar-label">{label}</div>
-      <div
-        className="bar-value"
-        style={{ marginLeft: "auto", textAlign: "right", whiteSpace: "normal" }}
-      >
-        {value}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
