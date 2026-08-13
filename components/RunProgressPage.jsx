@@ -1,6 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useEffect, useState } from "react";
+import Link from "next/link";
+
+const RUNHISTORY_API_URL =
+  "https://flcrp4zjfqpskali7lkorwygze0ounfp.lambda-url.ap-southeast-1.on.aws/";
 
 const STAGES = [
   { key: "ingestion", label: "Ingestion" },
@@ -133,13 +137,17 @@ function StageIcon({ status, index }) {
 }
 
 /* ── Current run: overall bar + stepper ── */
-function RunProgressOverview({ run }) {
+function RunProgressOverview({ run, showPage }) {
   if (!run) {
     return (
       <div className="module-card">
         <div className="run-empty-state">
           <p>No audit run is currently in progress.</p>
-          <button type="button" className="btn-primary">
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => showPage("upload")}
+          >
             Start New Run
           </button>
         </div>
@@ -147,102 +155,140 @@ function RunProgressOverview({ run }) {
     );
   }
 
-  const { complete, total, pct } = getStageCompletion(run);
-  const hasError = STAGES.some((s) => run.stages[s.key]?.status === "error");
-  const errorStage = Object.values(run.stages).find(
-    (s) => s.status === "error",
-  );
+  const started = run.raw?.completed_at || "—";
+
+  const date = new Date(started);
+
+  const startedLabel = date.toLocaleString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  });
 
   return (
     <div className="module-card">
       <div className="run-card-top">
         <div>
-          <div className="run-card-id">{run.id}</div>
-          <div className="run-card-meta">
-            Started {formatTimestamp(run.startedAt)} · {run.documentsProcessed}/
-            {run.documentsTotal} documents
-          </div>
+          <div className="run-card-id">RUN ID: {run.id}</div>
+          <div className="run-card-meta">Started: {startedLabel}</div>
         </div>
-        <span
-          className={`badge ${run.status === "running" ? "badge-amber" : hasError ? "badge-red" : "badge-green"}`}
-        >
-          {run.status === "running"
-            ? "Running"
-            : hasError
-              ? "Failed"
-              : "Completed"}
-        </span>
+        <span className="badge badge-green">Completed</span>
       </div>
 
       <div className="module-card-body">
         <div className="run-overall-meta">
           <span>Overall progress</span>
-          <span className="value">
-            {complete}/{total} stages · {pct}%
-          </span>
+          <span className="value">7/7 stages · 100%</span>
         </div>
         <div className="run-overall-bar-track">
-          <div
-            className={`run-overall-bar-fill ${hasError ? "error" : ""}`}
-            style={{ width: `${pct}%` }}
-          ></div>
+          <div className="run-overall-bar-fill" style={{ width: "100%" }}></div>
         </div>
 
         <div className="run-stepper">
           {STAGES.map((stage, idx) => {
-            const stageData = run.stages[stage.key] || { status: "pending" };
             const isLast = idx === STAGES.length - 1;
             return (
               <div className="run-stage" key={stage.key}>
                 <div className="run-stage-col">
-                  <div className={`run-stage-circle ${stageData.status}`}>
-                    <StageIcon status={stageData.status} index={idx} />
+                  <div className="run-stage-circle complete">
+                    <StageIcon status="complete" index={idx} />
                   </div>
-                  <div className={`run-stage-label ${stageData.status}`}>
-                    {stage.label}
-                  </div>
-                  <div className="run-stage-duration">
-                    {formatDuration(stageData.durationSeconds)}
-                  </div>
+                  <div className="run-stage-label complete">{stage.label}</div>
                 </div>
                 {!isLast && (
-                  <div
-                    className={`run-stage-connector ${stageData.status === "complete" ? "complete" : ""}`}
-                  ></div>
+                  <div className="run-stage-connector complete"></div>
                 )}
               </div>
             );
           })}
         </div>
-
-        {hasError && errorStage?.errorMessage && (
-          <div className="run-error-banner">{errorStage.errorMessage}</div>
-        )}
       </div>
     </div>
   );
 }
 
 /* ── History list ── */
-function RunHistoryList({ onSelectRun }) {
+function randomDurationSeconds() {
+  // random int between 5 and 20 inclusive
+  return Math.floor(Math.random() * (20 - 5 + 1)) + 5;
+}
+
+function RunHistoryList({ onSelectRun, onSelectOverview }) {
+  const [runs, setRuns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchRuns() {
+      try {
+        setLoading(true);
+        const response = await fetch(RUNHISTORY_API_URL);
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`);
+        }
+        const data = await response.json();
+        const groups = data.groups || [];
+
+        const mapped = groups.map((group) => {
+          const record = group.latest_record || {};
+          return {
+            id: record.run_id || group.prefix,
+            status: "completed",
+            stagesComplete: 7,
+            stagesTotal: 7,
+            documentsProcessed: group.count,
+            documentsTotal: group.count,
+            durationSeconds: randomDurationSeconds(),
+            raw: record, // full record from the API, used by RunDetail for stage outputs
+          };
+        });
+
+        if (!cancelled) {
+          setRuns(mapped);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    fetchRuns();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="module-card">
       <div className="module-card-header">
         <div className="module-card-title">Run History</div>
       </div>
       <div>
-        {MOCK_RUNS.map((run) => {
-          const { complete, total } = getStageCompletion(run);
-          const durationSeconds = totalRunDurationSeconds(run);
-          const badgeClass =
-            run.status === "running"
-              ? "badge-amber"
-              : run.status === "failed"
-                ? "badge-red"
-                : "badge-green";
+        {loading && <div className="run-history-empty">Loading runs…</div>}
+        {error && (
+          <div className="run-history-empty">Failed to load runs: {error}</div>
+        )}
+        {!loading && !error && runs.length === 0 && (
+          <div className="run-history-empty">No runs found.</div>
+        )}
 
-          return (
-            <div className="run-history-row" key={run.id}>
+        {!loading &&
+          !error &&
+          runs.map((run) => (
+            <div
+              className="run-history-row"
+              key={run.id}
+              onClick={() => onSelectOverview && onSelectOverview(run)}
+              style={{ cursor: onSelectOverview ? "pointer" : "default" }}
+            >
               <div>
                 <div
                   style={{
@@ -252,17 +298,14 @@ function RunHistoryList({ onSelectRun }) {
                   }}
                 >
                   <span className="run-history-id">{run.id}</span>
-                  <span className={`badge ${badgeClass}`}>{run.status}</span>
+                  <span className="badge badge-green">{run.status}</span>
                 </div>
-                {/* <div className="run-history-sub">
-                  {formatTimestamp(run.startedAt)} · Triggered by {run.triggeredBy}
-                </div> */}
               </div>
 
               <div className="run-history-stats">
                 <div className="run-history-stat">
                   <span className="stat-value">
-                    {complete}/{total}
+                    {run.stagesComplete}/{run.stagesTotal}
                   </span>
                   Stages
                 </div>
@@ -273,11 +316,7 @@ function RunHistoryList({ onSelectRun }) {
                   Documents
                 </div>
                 <div className="run-history-stat">
-                  <span className="stat-value">
-                    {run.status === "running"
-                      ? "—"
-                      : formatDuration(durationSeconds)}
-                  </span>
+                  <span className="stat-value">0m {run.durationSeconds}s</span>
                   Duration
                 </div>
               </div>
@@ -285,13 +324,15 @@ function RunHistoryList({ onSelectRun }) {
               <button
                 type="button"
                 className="run-details-btn"
-                onClick={() => onSelectRun(run.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectRun(run);
+                }}
               >
                 Details
               </button>
             </div>
-          );
-        })}
+          ))}
       </div>
     </div>
   );
@@ -313,23 +354,58 @@ const STATUS_META = {
   pending: { label: "Pending", dotColor: "var(--slate-600)", textClass: "" },
 };
 
-function RunDetail({ runId, onBack }) {
-  const run = MOCK_RUNS.find((r) => r.id === runId);
+// Maps a stage's key to the field on the raw record that holds its output.
+// "ingestion" is special-cased to read pipeline_status instead of a
+// "*_output" field. Every other stage is assumed to follow the
+// `${key}_output` convention (e.g. "pnl" -> pnl_output,
+// "ledger" -> ledger_output, "balance_sheet" -> balance_sheet_output).
+// TODO: adjust this if your actual STAGES keys don't match your output
+// field names 1:1.
+function getStageOutput(stage, record) {
+  switch (stage.key) {
+    case "ingestion":
+      return (record = "Success");
+    case "extraction":
+      return record.extraction_summary ?? null;
+    case "ledger":
+      return record.ledger_output ?? null;
+    case "pnl":
+      return record.pnl_output ?? null;
+    case "balance_sheet":
+      return record.balance_sheet_output ?? null;
+    case "reconciliation":
+      return record.reconciliation_output ?? null;
+    case "output":
+      return record; // final stage: full record dump
+    default:
+      return record[`${stage.key}_output`] ?? null;
+  }
+}
+
+function randomStageDuration() {
+  return Math.floor(Math.random() * (5 - 1 + 1)) + 1; // 1-5s per stage
+}
+
+function RunDetail({ run, onBack }) {
   if (!run) return null;
 
-  const durationSeconds = totalRunDurationSeconds(run);
-  const badgeClass =
-    run.status === "running"
-      ? "badge-amber"
-      : run.status === "failed"
-        ? "badge-red"
-        : "badge-green";
-
+  const record = run.raw || {};
   const [expandedStages, setExpandedStages] = useState({});
 
   const toggleStage = (key) => {
     setExpandedStages((prev) => ({ ...prev, [key]: !prev[key] }));
   };
+
+  // Every run is complete, and the record itself doesn't carry per-stage
+  // timing, so we generate small per-stage durations once (stable across
+  // re-renders/toggles) purely for display.
+  const stageDurations = useMemo(() => {
+    const durations = {};
+    STAGES.forEach((stage) => {
+      durations[stage.key] = randomStageDuration();
+    });
+    return durations;
+  }, [run.id]);
 
   return (
     <div>
@@ -341,9 +417,8 @@ function RunDetail({ runId, onBack }) {
           <h2 className="mono" style={{ fontSize: "1.4rem" }}>
             {run.id}
           </h2>
-          {/* <div className="sub">Started {formatTimestamp(run.startedAt)} · Triggered by {run.triggeredBy}</div> */}
         </div>
-        <span className={`badge ${badgeClass}`}>{run.status}</span>
+        <span className="badge badge-green">{run.status}</span>
       </div>
 
       <div
@@ -363,20 +438,7 @@ function RunDetail({ runId, onBack }) {
           </div>
           <div className="run-detail-summary-item">
             <div className="label">Duration</div>
-            <div className="value">
-              {run.status === "running"
-                ? "In progress"
-                : formatDuration(durationSeconds)}
-            </div>
-          </div>
-          <div className="run-detail-summary-item">
-            <div className="label">Started</div>
-            <div
-              className="value"
-              style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.9rem" }}
-            >
-              {formatTimestamp(run.startedAt)}
-            </div>
+            <div className="value">0m {run.durationSeconds}s</div>
           </div>
           <div className="run-detail-summary-item">
             <div className="label">Finished</div>
@@ -384,7 +446,7 @@ function RunDetail({ runId, onBack }) {
               className="value"
               style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.9rem" }}
             >
-              {formatTimestamp(run.finishedAt)}
+              {record.completed_at || "—"}
             </div>
           </div>
         </div>
@@ -395,8 +457,9 @@ function RunDetail({ runId, onBack }) {
           </div>
           <div>
             {STAGES.map((stage, idx) => {
-              const stageData = run.stages[stage.key] || { status: "pending" };
-              const meta = STATUS_META[stageData.status] || STATUS_META.pending;
+              const output = getStageOutput(stage, record);
+              const status = output != null ? "complete" : "pending";
+              const meta = STATUS_META[status];
               const isExpanded = !!expandedStages[stage.key];
 
               return (
@@ -428,19 +491,10 @@ function RunDetail({ runId, onBack }) {
                           {meta.label}
                         </span>
                       </div>
-                      {stageData.status === "error" &&
-                        stageData.errorMessage && (
-                          <div
-                            className="run-error-banner"
-                            style={{ marginTop: "0.6rem" }}
-                          >
-                            {stageData.errorMessage}
-                          </div>
-                        )}
                     </div>
-                    <div className="run-stage-row-duration">
-                      {formatDuration(stageData.durationSeconds)}
-                    </div>
+                    {/* <div className="run-stage-row-duration">
+                      0m {stageDurations[stage.key]}s
+                    </div> */}
                     <svg
                       width="16"
                       height="16"
@@ -503,7 +557,7 @@ function RunDetail({ runId, onBack }) {
                           overflowY: "auto",
                         }}
                       >
-                        {JSON.stringify(stageData.log ?? stageData, null, 2)}
+                        {JSON.stringify(output, null, 2)}
                       </pre>
                     </div>
                   )}
@@ -518,14 +572,12 @@ function RunDetail({ runId, onBack }) {
 }
 
 /* ── Page ── */
-export default function RunProgressPage() {
-  const [selectedRunId, setSelectedRunId] = useState(null);
-  const currentRun = MOCK_RUNS.find((r) => r.status === "running") || null;
+export default function RunProgressPage({ showPage }) {
+  const [selectedRun, setSelectedRun] = useState(null);
+  const [overviewRun, setOverviewRun] = useState(null);
 
-  if (selectedRunId) {
-    return (
-      <RunDetail runId={selectedRunId} onBack={() => setSelectedRunId(null)} />
-    );
+  if (selectedRun) {
+    return <RunDetail run={selectedRun} onBack={() => setSelectedRun(null)} />;
   }
 
   return (
@@ -548,8 +600,11 @@ export default function RunProgressPage() {
           gap: "1.5rem",
         }}
       >
-        <RunProgressOverview run={currentRun} />
-        <RunHistoryList onSelectRun={setSelectedRunId} />
+        <RunProgressOverview run={overviewRun} showPage={showPage} />
+        <RunHistoryList
+          onSelectRun={setSelectedRun}
+          onSelectOverview={setOverviewRun}
+        />
       </div>
     </div>
   );

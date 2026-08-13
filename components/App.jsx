@@ -33,7 +33,7 @@ export default function App() {
         {page === "receipts" && <ReceiptsPage />}
         {page === "recon" && <ReconPage />}
         {page === "settings" && <SettingsPage />}
-        {page === "run" && <RunProgress/>}
+        {page === "run" && <RunProgress showPage={showPage} />}
       </div>
     </>
   );
