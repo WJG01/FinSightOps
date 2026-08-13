@@ -20,6 +20,25 @@ const UPLOAD_LAMBDA_URL =
 const DOCS_LAMBDA_URL =
   "https://5f5nhc7vor7cazrn5c5eef24gq0aopjr.lambda-url.ap-southeast-1.on.aws/";
 
+// Endpoint that triggers a single-document audit run
+const AUDIT_TRIGGER_LAMBDA_URL =
+  "https://7tb7ncximsvqwoffyuym6v2yqu0slzsr.lambda-url.ap-southeast-1.on.aws/";
+
+// Bucket where raw uploads live
+const AUDIT_BUCKET = "upload-bucket-raw";
+
+// Maps a stored documentType (label or value) back to the lambda's expected doc_type value
+function toDocTypeValue(rawType) {
+  const match = DOCUMENT_TYPES.find(
+    (d) => d.value === rawType || d.label === rawType,
+  );
+  return match
+    ? match.value
+    : String(rawType || "")
+        .toLowerCase()
+        .replace(/\s+/g, "_");
+}
+
 function totalForYear(yearData) {
   return QUARTERS.reduce((sum, q) => sum + (yearData?.[q]?.length || 0), 0);
 }
@@ -163,6 +182,10 @@ export default function DocUploadPage() {
   // --- Selection state for running audit ---
   const [selectedQuarters, setSelectedQuarters] = useState(new Set());
 
+  const [isRunningAudit, setIsRunningAudit] = useState(false);
+  const [auditError, setAuditError] = useState("");
+  const [auditResults, setAuditResults] = useState([]); // per-document result log
+
   const toggleQuarterSelection = (key) => {
     setSelectedQuarters((prev) => {
       const next = new Set(prev);
@@ -171,10 +194,91 @@ export default function DocUploadPage() {
     });
   };
 
-  const handleRunAudit = () => {
-    console.log("Run audit for quarters:", Array.from(selectedQuarters));
-    // TODO: call your run-trigger endpoint (e.g. the Lambda from earlier) here,
-    // passing the selected financial-year/quarter keys.
+  const handleRunAudit = async () => {
+    const quarterKeys = Array.from(selectedQuarters);
+    if (quarterKeys.length === 0) return;
+
+    setAuditError("");
+    setAuditResults([]);
+    setIsRunningAudit(true);
+
+    try {
+      for (const key of quarterKeys) {
+        // key looks like "2026-Q4"
+        const [year, quarter] = key.split("-");
+        const files = documentsByYear?.[year]?.[quarter] || [];
+        if (files.length === 0) continue;
+
+        const uploaded_item = files.map((file) => ({
+          doc_type: toDocTypeValue(file.documentType),
+          s3_key: `documents/${year}/${quarter}/${file.fileName}`,
+        }));
+
+        const batchPayload = {
+          fy_quarter: key,
+          bucket: AUDIT_BUCKET,
+          uploaded_item,
+        };
+
+        console.log("Audit batch for", key, batchPayload);
+
+        // Fire one trigger call per document, sharing run_id + bucket
+        for (const item of batchPayload.uploaded_item) {
+          const runPayload = {
+            run_id: batchPayload.fy_quarter,
+            doc_type: item.doc_type,
+            bucket: batchPayload.bucket,
+            s3_key: item.s3_key,
+          };
+
+          try {
+            const res = await fetch(AUDIT_TRIGGER_LAMBDA_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(runPayload),
+            });
+
+            const resultData = await res.json().catch(() => ({}));
+
+            setAuditResults((prev) => [
+              ...prev,
+              {
+                fy_quarter: key,
+                doc_type: item.doc_type,
+                s3_key: item.s3_key,
+                status: res.ok ? "success" : "failed",
+                message: res.ok
+                  ? "Triggered"
+                  : resultData?.message || res.statusText,
+              },
+            ]);
+
+            if (!res.ok) {
+              console.error("Audit trigger failed", runPayload, resultData);
+            }
+          } catch (err) {
+            console.error("Audit trigger error", runPayload, err);
+            setAuditResults((prev) => [
+              ...prev,
+              {
+                fy_quarter: key,
+                doc_type: item.doc_type,
+                s3_key: item.s3_key,
+                status: "failed",
+                message: err.message || "Network error",
+              },
+            ]);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Run audit error", err);
+      setAuditError(
+        err.message || "Something went wrong while running the audit.",
+      );
+    } finally {
+      setIsRunningAudit(false);
+    }
   };
 
   return (
@@ -309,10 +413,10 @@ export default function DocUploadPage() {
               type="button"
               className="btn-primary"
               onClick={handleRunAudit}
-              disabled={selectedQuarters.size === 0}
+              disabled={selectedQuarters.size === 0 || isRunningAudit}
               style={{ padding: "0.4rem 1.2rem", fontSize: "0.78rem" }}
             >
-              Run Audit
+              {isRunningAudit ? "Running audit…" : "Run Audit"}
             </button>
           </div>
           <div className="module-card-body">
