@@ -329,7 +329,7 @@ function RunHistoryList({ onSelectRun, onSelectOverview }) {
                 </div>
               </div>
 
-              <div className="run-history-stats">
+              {/* <div className="run-history-stats">
                 <div className="run-history-stat">
                   <span className="stat-value">
                     {run.stagesComplete}/{run.stagesTotal}
@@ -346,7 +346,7 @@ function RunHistoryList({ onSelectRun, onSelectOverview }) {
                   <span className="stat-value">0m {run.durationSeconds}s</span>
                   Duration
                 </div>
-              </div>
+              </div> */}
 
               <button
                 type="button"
