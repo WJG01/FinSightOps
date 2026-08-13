@@ -13,14 +13,15 @@ const DOCUMENT_TYPES = [
 
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"];
 
+// using the API gateway
 // Your upload Lambda (multipart/form-data POST)
 const UPLOAD_LAMBDA_URL =
-  "https://k74xcs6jalipde6byvaumfelba0zzgxd.lambda-url.ap-southeast-1.on.aws/";
+  "https://zyp4vg6s4h.execute-api.ap-southeast-1.amazonaws.com/default/finsight-uploadDoc-agent";
 
 // Your new list/download Lambda (GET, ?action=list | ?action=download&fileId=...)
 // Replace with the Function URL you get after deploying list_and_download_documents_lambda.py
 const DOCS_LAMBDA_URL =
-  "https://5f5nhc7vor7cazrn5c5eef24gq0aopjr.lambda-url.ap-southeast-1.on.aws/";
+  "https://2zwtqxqnz6.execute-api.ap-southeast-1.amazonaws.com/default/display-uploaded-doc";
 
 // Endpoint that triggers a single-document audit run
 const AUDIT_TRIGGER_LAMBDA_URL =
