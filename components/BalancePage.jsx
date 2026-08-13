@@ -21,7 +21,7 @@ import { useState, useCallback, useMemo } from 'react';
 /* ─── Constants ───────────────────────────────────────────── */
 
 const API_URL =
-  'https://aeg0uq46dk.execute-api.ap-southeast-1.amazonaws.com/default/finsight-reconciliation-agent';
+  'https://kmy6qz5f2ubh3a6fupb5lct7xq0sjcbl.lambda-url.ap-southeast-1.on.aws/';
 
 /** Selectable in the UI — the two params the Lambda accepts */
 const FINANCIAL_YEARS = ['2024', '2025', '2026'];
