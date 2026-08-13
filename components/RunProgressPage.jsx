@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useEffect, useState } from "react";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useSimulatedProgress } from "@/lib/useSimulatedProgress";
 import { subscribeAudit, getAuditState } from "@/lib/auditStore";
 
@@ -138,11 +138,15 @@ function StageIcon({ status, index }) {
 }
 
 function RunProgressOverview({ run, showPage, isAuditRunning, isAuditDone }) {
+  const isLive = !!run?.live;
+
+  // Simulator only drives progress for the live placeholder row.
   const activeIndex = useSimulatedProgress(
     STAGES,
-    isAuditRunning,
-    isAuditDone,
-    1800, // tune: ms "spent" per stage before moving to the next
+    isLive && isAuditRunning,
+    isLive && isAuditDone,
+    1800, // per-stage step
+    7000, // minimum total time before the bar is allowed to complete
   );
 
   if (!run) {
@@ -162,20 +166,27 @@ function RunProgressOverview({ run, showPage, isAuditRunning, isAuditDone }) {
     );
   }
 
+  // Historical / selected completed runs: always full + complete,
+  // regardless of what the live audit store is doing elsewhere.
+  const isComplete = !isLive || isAuditDone;
+
   const started = run.raw?.completed_at || "—";
   const date = new Date(started);
-  const startedLabel = date.toLocaleString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    timeZoneName: "short",
-  });
+  const startedLabel =
+    started === "—"
+      ? "In progress…"
+      : date.toLocaleString("en-US", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+          timeZoneName: "short",
+        });
 
-  const completedCount = isAuditDone ? STAGES.length : Math.max(activeIndex, 0);
-  const percent = isAuditDone
+  const completedCount = isComplete ? STAGES.length : Math.max(activeIndex, 0);
+  const percent = isComplete
     ? 100
     : Math.round((completedCount / STAGES.length) * 100);
 
@@ -186,8 +197,8 @@ function RunProgressOverview({ run, showPage, isAuditRunning, isAuditDone }) {
           <div className="run-card-id">RUN ID: {run.id}</div>
           <div className="run-card-meta">Started: {startedLabel}</div>
         </div>
-        <span className={`badge ${isAuditDone ? "badge-green" : "badge-blue"}`}>
-          {isAuditDone ? "Completed" : "Running"}
+        <span className={`badge ${isComplete ? "badge-green" : "badge-blue"}`}>
+          {isComplete ? "Completed" : "Running"}
         </span>
       </div>
 
@@ -208,7 +219,7 @@ function RunProgressOverview({ run, showPage, isAuditRunning, isAuditDone }) {
         <div className="run-stepper">
           {STAGES.map((stage, idx) => {
             const isLast = idx === STAGES.length - 1;
-            const status = isAuditDone
+            const status = isComplete
               ? "complete"
               : idx < activeIndex
                 ? "complete"
@@ -244,54 +255,90 @@ function randomDurationSeconds() {
   return Math.floor(Math.random() * (20 - 5 + 1)) + 5;
 }
 
-function RunHistoryList({ onSelectRun, onSelectOverview }) {
+function RunHistoryList({
+  onSelectRun,
+  onSelectOverview,
+  isAuditRunning,
+  isAuditDone,
+  quarterKeys = [],
+}) {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchRuns() {
-      try {
-        setLoading(true);
-        const response = await fetch(RUNHISTORY_API_URL);
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
-        }
-        const data = await response.json();
-        const groups = data.groups || [];
-
-        const mapped = groups.map((group) => {
-          const record = group.latest_record || {};
-          return {
-            id: record.run_id || group.prefix,
-            status: "completed",
-            stagesComplete: 7,
-            stagesTotal: 7,
-            documentsProcessed: group.count,
-            documentsTotal: group.count,
-            durationSeconds: randomDurationSeconds(),
-            raw: record, // full record from the API, used by RunDetail for stage outputs
-          };
-        });
-
-        if (!cancelled) {
-          setRuns(mapped);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err.message);
-      } finally {
-        if (!cancelled) setLoading(false);
+  const fetchRuns = useCallback(async () => {
+    try {
+      setLoading(true);
+      const response = await fetch(RUNHISTORY_API_URL);
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
       }
-    }
+      const data = await response.json();
+      const groups = data.groups || [];
 
-    fetchRuns();
-    return () => {
-      cancelled = true;
-    };
+      const mapped = groups.map((group) => {
+        const record = group.latest_record || {};
+        return {
+          id: record.run_id || group.prefix,
+          status: "completed",
+          stagesComplete: 7,
+          stagesTotal: 7,
+          documentsProcessed: group.count,
+          documentsTotal: group.count,
+          durationSeconds: randomDurationSeconds(),
+          raw: record,
+          live: false,
+        };
+      });
+
+      setRuns(mapped);
+      setError(null);
+      return mapped; // <-- return so callers can act on the fresh list
+    } catch (err) {
+      setError(err.message);
+      return [];
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchRuns();
+  }, [fetchRuns]);
+
+  // When the live audit finishes: refetch, then auto-select the top
+  // (most recent) record so the overview panel switches straight from
+  // the live placeholder to the real completed run — no manual click needed.
+  const prevAuditDone = useRef(isAuditDone);
+  useEffect(() => {
+    if (isAuditDone && !prevAuditDone.current) {
+      const timeout = setTimeout(async () => {
+        const mapped = await fetchRuns();
+        if (mapped.length > 0 && onSelectOverview) {
+          onSelectOverview(mapped[0]);
+        }
+      }, 1500);
+      prevAuditDone.current = isAuditDone;
+      return () => clearTimeout(timeout);
+    }
+    prevAuditDone.current = isAuditDone;
+  }, [isAuditDone, fetchRuns, onSelectOverview]);
+
+  const liveRow = isAuditRunning
+    ? {
+        id: quarterKeys.join(", ") || "current-run",
+        status: "running",
+        stagesComplete: 0,
+        stagesTotal: 7,
+        documentsProcessed: 0,
+        documentsTotal: 0,
+        durationSeconds: 0,
+        raw: {},
+        live: true,
+      }
+    : null;
+
+  const displayRuns = liveRow ? [liveRow, ...runs] : runs;
 
   return (
     <div className="module-card">
@@ -303,13 +350,13 @@ function RunHistoryList({ onSelectRun, onSelectOverview }) {
         {error && (
           <div className="run-history-empty">Failed to load runs: {error}</div>
         )}
-        {!loading && !error && runs.length === 0 && (
+        {!loading && !error && displayRuns.length === 0 && (
           <div className="run-history-empty">No runs found.</div>
         )}
 
         {!loading &&
           !error &&
-          runs.map((run) => (
+          displayRuns.map((run) => (
             <div
               className="run-history-row"
               key={run.id}
@@ -325,7 +372,11 @@ function RunHistoryList({ onSelectRun, onSelectOverview }) {
                   }}
                 >
                   <span className="run-history-id">{run.id}</span>
-                  <span className="badge badge-green">{run.status}</span>
+                  <span
+                    className={`badge ${run.live ? "badge-blue" : "badge-green"}`}
+                  >
+                    {run.live ? "running" : run.status}
+                  </span>
                 </div>
               </div>
 
@@ -351,12 +402,13 @@ function RunHistoryList({ onSelectRun, onSelectOverview }) {
               <button
                 type="button"
                 className="run-details-btn"
+                disabled={run.live}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onSelectRun(run);
+                  if (!run.live) onSelectRun(run);
                 }}
               >
-                Details
+                {run.live ? "In progress" : "Details"}
               </button>
             </div>
           ))}
@@ -602,9 +654,6 @@ function RunDetail({ run, onBack }) {
 export default function RunProgressPage({ showPage, quarterKeys = [] }) {
   const [selectedRun, setSelectedRun] = useState(null);
   const [overviewRun, setOverviewRun] = useState(null);
-
-  // Subscribe to the shared audit store so this page reflects an
-  // in-flight run even if it was kicked off from a different page.
   const [audit, setAudit] = useState(getAuditState());
 
   useEffect(() => {
@@ -615,16 +664,12 @@ export default function RunProgressPage({ showPage, quarterKeys = [] }) {
   const isAuditRunning = audit.isRunning;
   const isAuditDone = !audit.isRunning && audit.results.length > 0;
 
-  // While the audit is running (or just finished) and RunHistoryList hasn't
-  // surfaced a matching persisted run yet, fall back to a placeholder built
-  // from quarterKeys + the live audit store, so the overview isn't empty.
+  // Default overview: the live placeholder while running, else nothing
+  // (RunHistoryList's synthetic row + click will populate overviewRun too).
   const effectiveOverviewRun =
     overviewRun ||
-    (isAuditRunning || isAuditDone
-      ? {
-          id: quarterKeys.join(", ") || "current-run",
-          raw: { completed_at: audit.results.at(-1)?.completed_at || null },
-        }
+    (isAuditRunning
+      ? { id: quarterKeys.join(", ") || "current-run", raw: {}, live: true }
       : null);
 
   if (selectedRun) {
@@ -660,6 +705,9 @@ export default function RunProgressPage({ showPage, quarterKeys = [] }) {
         <RunHistoryList
           onSelectRun={setSelectedRun}
           onSelectOverview={setOverviewRun}
+          isAuditRunning={isAuditRunning}
+          isAuditDone={isAuditDone}
+          quarterKeys={quarterKeys}
         />
       </div>
     </div>
