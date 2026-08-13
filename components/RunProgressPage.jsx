@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useEffect, useState } from "react";
-import Link from "next/link";
+import { useSimulatedProgress } from "@/lib/useSimulatedProgress";
+import { subscribeAudit, getAuditState } from "@/lib/auditStore";
 
 const RUNHISTORY_API_URL =
   "https://flcrp4zjfqpskali7lkorwygze0ounfp.lambda-url.ap-southeast-1.on.aws/";
@@ -136,8 +137,14 @@ function StageIcon({ status, index }) {
   return <span>{index + 1}</span>;
 }
 
-/* ── Current run: overall bar + stepper ── */
-function RunProgressOverview({ run, showPage }) {
+function RunProgressOverview({ run, showPage, isAuditRunning, isAuditDone }) {
+  const activeIndex = useSimulatedProgress(
+    STAGES,
+    isAuditRunning,
+    isAuditDone,
+    1800, // tune: ms "spent" per stage before moving to the next
+  );
+
   if (!run) {
     return (
       <div className="module-card">
@@ -156,9 +163,7 @@ function RunProgressOverview({ run, showPage }) {
   }
 
   const started = run.raw?.completed_at || "—";
-
   const date = new Date(started);
-
   const startedLabel = date.toLocaleString("en-US", {
     year: "numeric",
     month: "long",
@@ -169,6 +174,11 @@ function RunProgressOverview({ run, showPage }) {
     timeZoneName: "short",
   });
 
+  const completedCount = isAuditDone ? STAGES.length : Math.max(activeIndex, 0);
+  const percent = isAuditDone
+    ? 100
+    : Math.round((completedCount / STAGES.length) * 100);
+
   return (
     <div className="module-card">
       <div className="run-card-top">
@@ -176,31 +186,48 @@ function RunProgressOverview({ run, showPage }) {
           <div className="run-card-id">RUN ID: {run.id}</div>
           <div className="run-card-meta">Started: {startedLabel}</div>
         </div>
-        <span className="badge badge-green">Completed</span>
+        <span className={`badge ${isAuditDone ? "badge-green" : "badge-blue"}`}>
+          {isAuditDone ? "Completed" : "Running"}
+        </span>
       </div>
 
       <div className="module-card-body">
         <div className="run-overall-meta">
           <span>Overall progress</span>
-          <span className="value">7/7 stages · 100%</span>
+          <span className="value">
+            {completedCount}/{STAGES.length} stages · {percent}%
+          </span>
         </div>
         <div className="run-overall-bar-track">
-          <div className="run-overall-bar-fill" style={{ width: "100%" }}></div>
+          <div
+            className="run-overall-bar-fill"
+            style={{ width: `${percent}%`, transition: "width 0.6s ease" }}
+          ></div>
         </div>
 
         <div className="run-stepper">
           {STAGES.map((stage, idx) => {
             const isLast = idx === STAGES.length - 1;
+            const status = isAuditDone
+              ? "complete"
+              : idx < activeIndex
+                ? "complete"
+                : idx === activeIndex
+                  ? "active"
+                  : "pending";
+
             return (
               <div className="run-stage" key={stage.key}>
                 <div className="run-stage-col">
-                  <div className="run-stage-circle complete">
-                    <StageIcon status="complete" index={idx} />
+                  <div className={`run-stage-circle ${status}`}>
+                    <StageIcon status={status} index={idx} />
                   </div>
-                  <div className="run-stage-label complete">{stage.label}</div>
+                  <div className={`run-stage-label ${status}`}>
+                    {stage.label}
+                  </div>
                 </div>
                 {!isLast && (
-                  <div className="run-stage-connector complete"></div>
+                  <div className={`run-stage-connector ${status}`}></div>
                 )}
               </div>
             );
@@ -572,9 +599,33 @@ function RunDetail({ run, onBack }) {
 }
 
 /* ── Page ── */
-export default function RunProgressPage({ showPage }) {
+export default function RunProgressPage({ showPage, quarterKeys = [] }) {
   const [selectedRun, setSelectedRun] = useState(null);
   const [overviewRun, setOverviewRun] = useState(null);
+
+  // Subscribe to the shared audit store so this page reflects an
+  // in-flight run even if it was kicked off from a different page.
+  const [audit, setAudit] = useState(getAuditState());
+
+  useEffect(() => {
+    const unsubscribe = subscribeAudit(setAudit);
+    return unsubscribe;
+  }, []);
+
+  const isAuditRunning = audit.isRunning;
+  const isAuditDone = !audit.isRunning && audit.results.length > 0;
+
+  // While the audit is running (or just finished) and RunHistoryList hasn't
+  // surfaced a matching persisted run yet, fall back to a placeholder built
+  // from quarterKeys + the live audit store, so the overview isn't empty.
+  const effectiveOverviewRun =
+    overviewRun ||
+    (isAuditRunning || isAuditDone
+      ? {
+          id: quarterKeys.join(", ") || "current-run",
+          raw: { completed_at: audit.results.at(-1)?.completed_at || null },
+        }
+      : null);
 
   if (selectedRun) {
     return <RunDetail run={selectedRun} onBack={() => setSelectedRun(null)} />;
@@ -600,7 +651,12 @@ export default function RunProgressPage({ showPage }) {
           gap: "1.5rem",
         }}
       >
-        <RunProgressOverview run={overviewRun} showPage={showPage} />
+        <RunProgressOverview
+          run={effectiveOverviewRun}
+          showPage={showPage}
+          isAuditRunning={isAuditRunning}
+          isAuditDone={isAuditDone}
+        />
         <RunHistoryList
           onSelectRun={setSelectedRun}
           onSelectOverview={setOverviewRun}

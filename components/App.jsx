@@ -9,17 +9,19 @@ import PLPage from "./PLPage";
 import BalancePage from "./BalancePage";
 import ReceiptsPage from "./ReceiptsPage";
 import ReconPage from "./ReconPage";
-import RunProgress from "./RunProgressPage";
+import RunProgressPage from "./RunProgressPage";
 export default function App() {
   const [page, setPage] = useState("landing");
 
-  const showPage = (name) => {
+  const [pageParams, setPageParams] = useState({});
+
+  const showPage = (name, params = {}) => {
     setPage(name);
+    setPageParams(params);
     if (typeof window !== "undefined") {
       window.scrollTo(0, 0);
     }
   };
-
   return (
     <>
       <Nav page={page} showPage={showPage} />
@@ -27,13 +29,19 @@ export default function App() {
       <div className="page">
         {page === "landing" && <LandingPage showPage={showPage} />}
         {page === "summary" && <DashboardPage showPage={showPage} />}
-        {page === "upload" && <DocUploadPage />}
+        {page === "upload" && <DocUploadPage showPage={showPage} />}
         {page === "pl" && <PLPage />}
         {page === "balance" && <BalancePage />}
         {page === "receipts" && <ReceiptsPage />}
         {page === "recon" && <ReconPage />}
         {page === "settings" && <SettingsPage />}
-        {page === "run" && <RunProgress showPage={showPage} />}
+        {/* {page === "run" && <RunProgress showPage={showPage} />} */}
+        {page === "run" && (
+          <RunProgressPage
+            showPage={showPage}
+            quarterKeys={pageParams.quarterKeys || []}
+          />
+        )}
       </div>
     </>
   );

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { runAudit } from "@/lib/auditStore";
+
 
 const DOCUMENT_TYPES = [
   { value: "invoice", label: "Invoice" },
@@ -43,7 +45,7 @@ function totalForYear(yearData) {
   return QUARTERS.reduce((sum, q) => sum + (yearData?.[q]?.length || 0), 0);
 }
 
-export default function DocUploadPage() {
+export default function DocUploadPage({ showPage }) {
   // --- Upload form state ---
   const [documentDate, setDocumentDate] = useState("");
   const [documentType, setDocumentType] = useState("");
@@ -198,87 +200,12 @@ export default function DocUploadPage() {
     const quarterKeys = Array.from(selectedQuarters);
     if (quarterKeys.length === 0) return;
 
-    setAuditError("");
-    setAuditResults([]);
-    setIsRunningAudit(true);
+    // Fire-and-forget — audit keeps running in the module-level store
+    // regardless of which page component is currently mounted.
+    runAudit(quarterKeys, documentsByYear, toDocTypeValue);
 
-    try {
-      for (const key of quarterKeys) {
-        // key looks like "2026-Q4"
-        const [year, quarter] = key.split("-");
-        const files = documentsByYear?.[year]?.[quarter] || [];
-        if (files.length === 0) continue;
-
-        const uploaded_item = files.map((file) => ({
-          doc_type: toDocTypeValue(file.documentType),
-          s3_key: `documents/${year}/${quarter}/${file.fileName}`,
-        }));
-
-        const batchPayload = {
-          fy_quarter: key,
-          bucket: AUDIT_BUCKET,
-          uploaded_item,
-        };
-
-        console.log("Audit batch for", key, batchPayload);
-
-        // Fire one trigger call per document, sharing run_id + bucket
-        for (const item of batchPayload.uploaded_item) {
-          const runPayload = {
-            run_id: batchPayload.fy_quarter,
-            doc_type: item.doc_type,
-            bucket: batchPayload.bucket,
-            s3_key: item.s3_key,
-          };
-
-          try {
-            const res = await fetch(AUDIT_TRIGGER_LAMBDA_URL, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(runPayload),
-            });
-
-            const resultData = await res.json().catch(() => ({}));
-
-            setAuditResults((prev) => [
-              ...prev,
-              {
-                fy_quarter: key,
-                doc_type: item.doc_type,
-                s3_key: item.s3_key,
-                status: res.ok ? "success" : "failed",
-                message: res.ok
-                  ? "Triggered"
-                  : resultData?.message || res.statusText,
-              },
-            ]);
-
-            if (!res.ok) {
-              console.error("Audit trigger failed", runPayload, resultData);
-            }
-          } catch (err) {
-            console.error("Audit trigger error", runPayload, err);
-            setAuditResults((prev) => [
-              ...prev,
-              {
-                fy_quarter: key,
-                doc_type: item.doc_type,
-                s3_key: item.s3_key,
-                status: "failed",
-                message: err.message || "Network error",
-              },
-            ]);
-          }
-        }
-      }
-    } catch (err) {
-      console.error("Run audit error", err);
-      setAuditError(
-        err.message || "Something went wrong while running the audit.",
-      );
-    } finally {
-      setIsRunningAudit(false);
-    }
+    setIsRunningAudit(false);
+    showPage("run", { quarterKeys });
   };
 
   return (
