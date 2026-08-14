@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const DEFAULT_ENDPOINT = "https://j2aac6i6f0.execute-api.ap-southeast-1.amazonaws.com/default/finsight-upload-lookup-agent";
 
-const YEARS = ["2026", "2025", "2024"];
+const YEARS = ["2026", "2025", "2024", "2023", "2022", "2021", "2020", "2019"];
 // The Lambda requires a quarter, so there is no "All" option.
 const QUARTERS = ["Q1", "Q2", "Q3", "Q4"];
 

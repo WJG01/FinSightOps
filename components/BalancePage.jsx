@@ -24,7 +24,7 @@ const API_URL =
   'https://j2aac6i6f0.execute-api.ap-southeast-1.amazonaws.com/default/finsight-upload-lookup-agent';
 
 /** Selectable in the UI — the two params the Lambda accepts */
-const FINANCIAL_YEARS = ['2024', '2025', '2026'];
+const FINANCIAL_YEARS = ["2026", "2025", "2024", "2023", "2022", "2021", "2020", "2019"];
 const QUARTERS        = ['Q1', 'Q2', 'Q3', 'Q4'];
 
 /* ─── Data helpers ────────────────────────────────────────── */
